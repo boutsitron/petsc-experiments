@@ -4,39 +4,19 @@
 import numpy as np
 from firedrake import COMM_WORLD
 from firedrake.petsc import PETSc
+from numpy.testing import assert_array_almost_equal
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
 
 
-def create_matrix(input_array, sparse=True):
-    """Building a seq petsc matrix from an array.
+def Print(x: str):
+    """Prints the string only on the root process
 
     Args:
-        input_array (np array): Input array
-        sparse (bool, optional): Toggle for sparese or dense. Defaults to True.
-
-    Returns:
-        seq mat: PETSc matrix
+        x (str): String to be printed
     """
-    assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
-
-    m, n = input_array.shape
-
-    # Create a sparse or dense matrix based on the 'sparse' argument
-    if sparse:
-        matrix = PETSc.Mat().createAIJ(size=(m, n), comm=PETSc.COMM_SELF)
-    else:
-        matrix = PETSc.Mat().createDense(size=(m, n), comm=PETSc.COMM_SELF)
-
-    matrix.setType("aij")
-
-    matrix.setUp()
-    matrix.setValues(range(m), range(n), input_array)
-    matrix.assemblyBegin()
-    matrix.assemblyEnd()
-
-    return matrix
+    PETSc.Sys.Print(x)
 
 
 def create_petsc_matrix_non_partitioned(input_array, sparse=True):
@@ -54,7 +34,7 @@ def create_petsc_matrix_non_partitioned(input_array, sparse=True):
 
     m, n = input_array.shape
 
-    print(f"The non-partitioned petsc matrix to be created is of size: {m, n}")
+    Print(f"The non-partitioned petsc matrix to be created is of size: {m, n}")
 
     # If the size of the input vector is 1, handle it as a special case
     if m == 1 and n == 1:
@@ -63,11 +43,6 @@ def create_petsc_matrix_non_partitioned(input_array, sparse=True):
         else:
             matrix = PETSc.Mat().createDense(size=((1, 1), (1, 1)), comm=COMM_WORLD)
         matrix.setUp()
-
-        local_start, local_end = matrix.getOwnershipRange()
-        # print(f"For proc {rank} matrix OwnershipRange: {local_start, local_end }")
-        # print(f"for proc {rank} input_array: {input_array}")
-        # pdb.set_trace()
 
         if rank == 0:
             matrix.setValue(0, 0, input_array[0, 0])
@@ -82,15 +57,9 @@ def create_petsc_matrix_non_partitioned(input_array, sparse=True):
         matrix = PETSc.Mat().createDense(size=((m, n), (m, n)), comm=COMM_WORLD)
     matrix.setUp()
 
-    local_start, local_end = matrix.getOwnershipRange()
-    # print(f"For proc {rank} matrix OwnershipRange: {local_start, local_end}")
-    # print(f"for proc {rank} input_array: {input_array}")
-    # pdb.set_trace()
-
-    # Explicitly define dtype as np.int32
+    # Set the values of the matrix
     matrix.setValues(range(m), range(n), input_array[:, :], addv=False)
 
-    # pdb.set_trace()
     # Assembly the matrix to compute the final structure
     matrix.assemblyBegin()
     matrix.assemblyEnd()
@@ -113,22 +82,16 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
     assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
     global_rows, global_cols = input_array.shape
 
-    # If the size of the matrix is smaller than the number of processes, use a single process
-    if global_rows < nproc:
-        print("Creating sequential matrix")
-        comm = PETSc.COMM_SELF
-        size = (global_rows, global_cols)
-    else:
-        print("Creating mpi matrix")
-        comm = COMM_WORLD
-        if partition_like is not None:
-            local_rows_start, local_rows_end = partition_like.getOwnershipRange()
-            local_rows = local_rows_end - local_rows_start
+    Print("Creating mpi matrix")
+    comm = COMM_WORLD
+    if partition_like is not None:
+        local_rows_start, local_rows_end = partition_like.getOwnershipRange()
+        local_rows = local_rows_end - local_rows_start
 
-            # No parallelization in the columns, set local_cols = None to parallelize
-            size = ((local_rows, global_rows), (global_cols, global_cols))
-        else:
-            size = ((None, global_rows), (global_cols, global_cols))
+        # No parallelization in the columns, set local_cols = None to parallelize
+        size = ((local_rows, global_rows), (global_cols, global_cols))
+    else:
+        size = ((None, global_rows), (global_cols, global_cols))
 
     # Create a sparse or dense matrix based on the 'sparse' argument
     if sparse:
@@ -158,32 +121,30 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
     return matrix
 
 
-def print_local_size(matrix, rank):
-    """Print the local size of the matrix
-
-    Args:
-        matrix (petsc mat): PETSc matrix
-        rank (int): process rank
-    """
-    local_rows, _ = matrix.getSizes()
-    print(f"Process {rank} local size: {local_rows}")
+m, k = 10, 5
+# Generate the random numpy matrices
+np.random.seed(0)  # sets the seed to 0
+# A_np = np.random.rand(m, k)
+# B_np = np.random.rand(k, k)
+A_np = np.random.randint(low=0, high=6, size=(m, k))
+B_np = np.random.randint(low=0, high=6, size=(k, k))
 
 
-A = create_petsc_matrix(np.array([[1, 2], [3, 4]]))
-PETSc.Sys.Print("MATRIX A")
-print(A.getType())
-print(A.getSizes())
+A = create_petsc_matrix(A_np)
+Print("MATRIX A")
+Print(A.getType())
+Print(A.getSizes())
 A.view()
-PETSc.Sys.Print("")
+Print("")
 
 # pdb.set_trace()
 
-B = create_petsc_matrix_non_partitioned(np.array([[1, 0], [0, 1]]))
-PETSc.Sys.Print("MATRIX B")
-print(B.getType())
-print(B.getSizes())
+B = create_petsc_matrix_non_partitioned(B_np)
+Print("MATRIX B")
+Print(B.getType())
+Print(B.getSizes())
 B.view()
-PETSc.Sys.Print("")
+Print("")
 
 
 # pdb.set_trace()
@@ -191,7 +152,25 @@ PETSc.Sys.Print("")
 # C = A.matMult(B)
 C = A * B
 
-PETSc.Sys.Print("MATRIX C")
-print(C.getType())
-print(C.getSizes())
+Print("MATRIX C")
+Print(C.getType())
+Print(C.getSizes())
 C.view()
+
+# Compute the product using numpy and check the result only on root process
+AB_np = np.dot(A_np, B_np)
+Print(AB_np)
+
+# # Get the local ranges for C
+local_rows_start, local_rows_end = C.getOwnershipRange()
+
+# # Get the local values from C
+C_local = C.getValues(range(local_rows_start, local_rows_end), range(k))
+
+print(f"For rank {rank} C_local: {C_local}")
+print(
+    f"For rank {rank} AB_np[local_rows_start:local_rows_end,:]: {AB_np[local_rows_start:local_rows_end,:]}"
+)
+
+# Assert the correctness of the multiplication for the local subset
+assert_array_almost_equal(C_local, AB_np[local_rows_start:local_rows_end, :], decimal=5)

@@ -1,4 +1,4 @@
-"""Experimenting with petsc mat-mat multiplication"""
+"""Experimenting with PETSc mat-mat multiplication"""
 
 import numpy as np
 from firedrake import COMM_WORLD
@@ -37,7 +37,7 @@ def print_mat_info(mat, name):
 
 
 def create_petsc_matrix_seq(input_array):
-    """Building a sequential petsc matrix from an array
+    """Building a sequential PETSc matrix from an array
 
     Args:
         input_array (np array): Input array
@@ -65,11 +65,11 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
 
     Args:
         input_array (np array): Input array
-        partition_like (petsc mat, optional): Petsc matrix. Defaults to None.
+        partition_like (PETSc mat, optional): Petsc matrix. Defaults to None.
         sparse (bool, optional): Toggle for sparese or dense. Defaults to True.
 
     Returns:
-        petsc mat: PETSc matrix
+        PETSc mat: PETSc matrix
     """
     # Check if input_array is 1D and reshape if necessary
     assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
@@ -107,6 +107,78 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
     return matrix
 
 
+def get_local_submatrix(A):
+    """Get the local submatrix of A
+
+    Args:
+        A (mpi PETSc mat): partitioned PETSc matrix
+
+    Returns:
+        seq mat: PETSc matrix
+    """
+    local_rows_start, local_rows_end = A.getOwnershipRange()
+    local_rows = local_rows_end - local_rows_start
+    comm = A.getComm()
+    rows = PETSc.IS().createStride(
+        local_rows, first=local_rows_start, step=1, comm=comm
+    )
+    _, k = A.getSize()  # Get the number of columns (k) from A's size
+    cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
+
+    # print(f"For proc {rank} rows indices: {rows.getIndices()}")
+    # Print(f"For proc {rank} cols indices: {cols.getIndices()}")
+
+    # Getting the local submatrix
+    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
+    A_local = A.createSubMatrices(rows, cols)[0]
+    return A_local
+
+
+def multiply_sequential_matrices(A_seq, B_seq):
+    """Multiply 2 sequential matrices
+
+    Args:
+        A_seq (seqaij): local submatrix of A
+        B_seq (seqaij): sequential matrix B
+
+    Returns:
+        seq mat: PETSc matrix that is the product of A_seq and B_seq
+    """
+    _, A_seq_cols = A_seq.getSize()
+    B_seq_rows, _ = B_seq.getSize()
+    assert (
+        A_seq_cols == B_seq_rows
+    ), f"Incompatible matrix sizes for multiplication: {A_seq_cols} != {B_seq_rows}"
+    C_local = A_seq.matMult(B_seq)
+    return C_local
+
+
+def create_global_matrix(C_local, A):
+    """Create the global matrix C from the local submatrix C_local
+
+    Args:
+        C_local (seqaij): local submatrix of C
+        A (mpi PETSc mat): PETSc matrix A
+
+    Returns:
+        mpi PETSc mat: partitioned PETSc matrix C
+    """
+    C_local_rows, C_local_cols = C_local.getSize()
+    local_rows_start, _ = A.getOwnershipRange()
+    m, _ = A.getSize()
+    C = PETSc.Mat().createAIJ(
+        size=((None, m), (C_local_cols, C_local_cols)), comm=COMM_WORLD
+    )
+    C.setUp()
+    for i in range(C_local_rows):
+        cols, values = C_local.getRow(i)
+        global_row = i + local_rows_start
+        C.setValues(global_row, cols, values)
+    C.assemblyBegin()
+    C.assemblyEnd()
+    return C
+
+
 m, k = 11, 7
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
@@ -120,67 +192,20 @@ print_mat_info(B_seq, "B")
 A = create_petsc_matrix(A_np)
 print_mat_info(A, "A")
 
-# --------------------------------------------
+
 # Getting the correct local submatrix to be multiplied by B_seq
-# --------------------------------------------
-# Create a local sequential matrix for A using the local submatrix
-local_rows_start, local_rows_end = A.getOwnershipRange()
-local_rows = local_rows_end - local_rows_start
+A_local = get_local_submatrix(A)
 
-comm = A.getComm()
-rows = PETSc.IS().createStride(local_rows, first=local_rows_start, step=1, comm=comm)
-cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
-
-# print(f"For proc {rank} rows indices: {rows.getIndices()}")
-# Print(f"For proc {rank} cols indices: {cols.getIndices()}")
-
-# Getting the local submatrix
-# TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
-A_local = A.createSubMatrices(rows, cols)[0]
-
-# --------------------------------------------
 # Multiplication of 2 sequential matrices
-# --------------------------------------------
-# Before multiplying the two matrices
-A_local_rows, A_local_cols = A_local.getSize()
-B_seq_rows, B_seq_cols = B_seq.getSize()
-assert (
-    A_local_cols == B_seq_rows
-), f"Incompatible matrix sizes for multiplication: {A_local_cols} != {B_seq_rows}"
+C_local = multiply_sequential_matrices(A_local, B_seq)
 
-# Multiply the two matrices
-C_local = A_local.matMult(B_seq)
-
-
-# --------------------------------------------
 # Creating the global C matrix
-# --------------------------------------------
-# Get the local sizes of the C matrix
-C_local_rows, C_local_cols = C_local.getSize()
-local_rows_start, _ = A.getOwnershipRange()
-
-# Create global C matrix
-C = PETSc.Mat().createAIJ(
-    size=((None, m), (C_local_cols, C_local_cols)), comm=COMM_WORLD
-)
-C.setUp()
-
-# Insert the C_local matrix values into the global C matrix
-for i in range(C_local_rows):
-    cols, values = C_local.getRow(i)
-    global_row = i + local_rows_start
-    C.setValues(global_row, cols, values)
-
-# Assembly the matrix to compute the final structure
-C.assemblyBegin()
-C.assemblyEnd()
-
+C = create_global_matrix(C_local, A)
 print_mat_info(C, "C")
 
 # --------------------------------------------
 # TEST: Multiplication of 2 numpy matrices
 # --------------------------------------------
-
 AB_np = np.dot(A_np, B_np)
 Print(f"MATRIX AB_np [{AB_np.shape[0]}x{AB_np.shape[1]}]")
 Print(AB_np)

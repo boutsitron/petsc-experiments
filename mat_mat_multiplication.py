@@ -178,7 +178,7 @@ C.assemblyEnd()
 print_mat_info(C, "C")
 
 # --------------------------------------------
-# Creating the global C matrix
+# TEST: Multiplication of 2 numpy matrices
 # --------------------------------------------
 
 AB_np = np.dot(A_np, B_np)

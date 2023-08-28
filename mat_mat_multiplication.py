@@ -3,37 +3,15 @@
 import numpy as np
 from firedrake import COMM_WORLD
 from firedrake.petsc import PETSc
+from mpi4py import MPI
 from numpy.testing import assert_array_almost_equal
+
+from utilities import Print, print_mat_info
 
 # import pdb
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
-
-
-def Print(x: str):
-    """Prints the string only on the root process
-
-    Args:
-        x (str): String to be printed
-    """
-    PETSc.Sys.Print(x)
-
-
-def print_mat_info(mat, name):
-    """Prints the matrix information
-
-    Args:
-        mat (PETSc mat): PETSc matrix
-        name (string): Name of the matrix
-    """
-    Print(f"MATRIX {name} [{mat.getSize()[0]}x{mat.getSize()[1]}]")
-    # print(f"For rank {rank} local {name}: {mat.getSizes()}")
-    Print(mat.getType())
-    mat.view()
-    Print("")
-    COMM_WORLD.Barrier()
-    Print("")
 
 
 def create_petsc_matrix_seq(input_array):
@@ -134,7 +112,7 @@ def get_local_submatrix(A):
     return A_local
 
 
-def multiply_sequential_matrices(A_seq, B_seq):
+def multiply_matrices_seq(A_seq, B_seq):
     """Multiply 2 sequential matrices
 
     Args:
@@ -153,31 +131,47 @@ def multiply_sequential_matrices(A_seq, B_seq):
     return C_local
 
 
-def create_global_matrix(C_local, A):
+def concatenate_local_to_global_matrix(C_local):
     """Create the global matrix C from the local submatrix C_local
 
     Args:
         C_local (seqaij): local submatrix of C
-        A (mpi PETSc mat): PETSc matrix A
 
     Returns:
         mpi PETSc mat: partitioned PETSc matrix C
     """
     C_local_rows, C_local_cols = C_local.getSize()
-    local_rows_start, _ = A.getOwnershipRange()
-    m, _ = A.getSize()
+
+    # Get the global number of rows for C matrix using MPI Allreduce
+    global_rows = COMM_WORLD.allreduce(C_local_rows, op=MPI.SUM)
+
     C = PETSc.Mat().createAIJ(
-        size=((None, m), (C_local_cols, C_local_cols)), comm=COMM_WORLD
+        size=((None, global_rows), (C_local_cols, C_local_cols)), comm=COMM_WORLD
     )
     C.setUp()
+
+    # The exscan operation is used to get the starting global row for each process.
+    # The result of the exclusive scan is the sum of the local rows from previous ranks.
+    global_row_start = COMM_WORLD.exscan(C_local_rows, op=MPI.SUM)
+    if rank == 0:
+        global_row_start = 0
+
     for i in range(C_local_rows):
         cols, values = C_local.getRow(i)
-        global_row = i + local_rows_start
+        global_row = i + global_row_start
         C.setValues(global_row, cols, values)
+
     C.assemblyBegin()
     C.assemblyEnd()
+
     return C
 
+
+# --------------------------------------------
+# TEST: Multiplication of an mpi PETSc matrix with a sequential PETSc matrix
+#  C = A * B
+# [m x k] = [m x k] * [k x k]
+# --------------------------------------------
 
 m, k = 11, 7
 # Generate the random numpy matrices
@@ -197,10 +191,10 @@ print_mat_info(A, "A")
 A_local = get_local_submatrix(A)
 
 # Multiplication of 2 sequential matrices
-C_local = multiply_sequential_matrices(A_local, B_seq)
+C_local = multiply_matrices_seq(A_local, B_seq)
 
 # Creating the global C matrix
-C = create_global_matrix(C_local, A)
+C = concatenate_local_to_global_matrix(C_local)
 print_mat_info(C, "C")
 
 # --------------------------------------------

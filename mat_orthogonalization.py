@@ -20,8 +20,8 @@ from numpy.testing import assert_array_almost_equal
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
-EPSILON_SVD = 1e-9
-EPS = 1e-12
+EPSILON_SVD = 1e-4
+EPS = sys.float_info.epsilon
 
 
 def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow

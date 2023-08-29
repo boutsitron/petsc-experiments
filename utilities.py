@@ -1,6 +1,6 @@
 """Utility functions for parallel handling"""
 
-from firedrake import COMM_WORLD
+from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 
 rank = COMM_WORLD.rank
@@ -15,27 +15,50 @@ def Print(x: str):
     PETSc.Sys.Print(x)
 
 
-def print_mat_info(mat, name):
-    """Prints the matrix information
+def print_matrix_partitioning(mat, name="", values=False):  # sourcery skip: move-assign
+    """Prints partitioning information of a PETSc MPI matrix.
 
     Args:
-        mat (PETSc mat): PETSc matrix
-        name (string): Name of the matrix
+        mat (PETSc Mat): The PETSc MPI matrix.
+        name (str): Optional name for the matrix for better identification in printout.
+        values (bool): Toggle for printing the local values of the matrix. Defaults to False.
     """
-    Print(f"MATRIX {name} [{mat.getSize()[0]}x{mat.getSize()[1]}]")
-    # print(f"For rank {rank} local {name}: {mat.getSizes()}")
-    Print(mat.getType())
-    mat.view()
-    COMM_WORLD.Barrier()
-    Print("")
+    # Get the local ownership range for rows
+    local_rows_start, local_rows_end = mat.getOwnershipRange()
+    # Collect all the local ownership ranges and local rows in the root process
+    ownership_ranges_rows = COMM_WORLD.gather(
+        (local_rows_start, local_rows_end), root=0
+    )
+
+    # Initialize an empty list to hold local row values
+    local_rows = []
+    for i in range(local_rows_start, local_rows_end):
+        cols, row_data = mat.getRow(i)
+        local_rows.append((i, list(zip(cols, row_data))))
+    all_local_rows = COMM_WORLD.gather(local_rows, root=0)
+
+    if rank == 0:
+        print(f"MATRIX {name} [{mat.getSize()[0]}x{mat.getSize()[1]}]")
+        print(mat.getType())
+        print("")
+        print(f"Partitioning for {name}:")
+        for i, ((start, end), local_rows) in enumerate(
+            zip(ownership_ranges_rows, all_local_rows)
+        ):
+            print(f"  Rank {i}: Rows [{start}, {end})")
+            if values:
+                for row_idx, row_data in local_rows:
+                    print(f"    Row {row_idx}: {row_data}")
+        print()
 
 
-def print_vector_partitioning(vec, name=""):
+def print_vector_partitioning(vec, name="", values=False):
     """Prints partitioning information and local values of a PETSc MPI vector.
 
     Args:
         vec (PETSc Vec): The PETSc MPI vector.
         name (str): Optional name for the vector for better identification in printout.
+        values (bool): Toggle for printing the local values of the vector. Defaults to False.
     """
     # Get the local ownership range
     local_start, local_end = vec.getOwnershipRange()
@@ -47,36 +70,18 @@ def print_vector_partitioning(vec, name=""):
     ownership_ranges = COMM_WORLD.gather((local_start, local_end), root=0)
     all_local_values = COMM_WORLD.gather(local_values, root=0)
 
-    if COMM_WORLD.rank == 0:
-        print(f"Partitioning and local values for {name} vector:")
+    if rank == 0:
+        print(f"VECTOR {name} [{vec.getSize()}x1]")
+        print(vec.getType())
+        # vec.view()
+        print("")
+        print(f"Partitioning for {name}:")
         for i, ((start, end), local_vals) in enumerate(
             zip(ownership_ranges, all_local_values)
         ):
             print(f"  Rank {i}: [{start}, {end})")
-            print(f"  Local Values: {local_vals}")
-        print()
-
-
-def print_matrix_partitioning(mat, name=""):
-    """Prints partitioning information of a PETSc MPI matrix.
-
-    Args:
-        mat (PETSc Mat): The PETSc MPI matrix.
-        name (str): Optional name for the matrix for better identification in printout.
-    """
-    # Get the local ownership range for rows
-    local_rows_start, local_rows_end = mat.getOwnershipRange()
-
-    # Collect all the local ownership ranges in the root process
-    ownership_ranges_rows = COMM_WORLD.gather(
-        (local_rows_start, local_rows_end), root=0
-    )
-
-    if rank == 0:
-        print(f"Partitioning for {name} matrix:")
-        print("  Rows:")
-        for i, (start, end) in enumerate(ownership_ranges_rows):
-            print(f"    Rank {i}: [{start}, {end})")
+            if values:
+                print(f"  Local Values: {local_vals}")
         print()
 
 
@@ -96,7 +101,7 @@ def create_petsc_vector_seq(input_array):
     k = input_array.shape[0]
 
     # Create a sequential vector
-    vector = PETSc.Vec().createSeq(size=k, comm=PETSc.COMM_SELF)
+    vector = PETSc.Vec().createSeq(size=k, comm=COMM_SELF)
 
     # Set the values
     vector.setValues(range(k), input_array)

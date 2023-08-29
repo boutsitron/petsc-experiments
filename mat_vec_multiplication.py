@@ -1,11 +1,11 @@
 """Experimenting with PETSc mat-mat multiplication"""
 
 import numpy as np
-from firedrake import COMM_WORLD
+from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 from numpy.testing import assert_array_almost_equal
 
-from utilities import Print, print_matrix_partitioning, print_vector_partitioning
+from utilities import Print, print_vector_partitioning
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
@@ -109,7 +109,7 @@ def multiply_matrix_transpose_to_vector(A, b):
     ), f"Incompatible local sizes: {A_local_rows} != {b.getSizes()[0]}"
 
     # c_local [kx1] <- A.T [kxm] * b [mx1]
-    c_local = PETSc.Vec().createSeq(size=A_cols, comm=PETSc.COMM_SELF)
+    c_local = PETSc.Vec().createSeq(size=A_cols, comm=COMM_SELF)
 
     A.multTranspose(b, c_local)
     return c_local
@@ -129,13 +129,11 @@ def scatter_local_to_global_vector(v_local):
     # Get the total size of the local vector. This is the size of the vector on the current MPI rank.
     local_size = len(v_local.getArray())
 
-    v_global = PETSc.Vec().createMPI(
-        size=(local_size, global_size), comm=PETSc.COMM_WORLD
-    )
+    v_global = PETSc.Vec().createMPI(size=(local_size, global_size), comm=COMM_WORLD)
 
     # Create an index set for the local/global vector.
-    is_local = PETSc.IS().createGeneral(range(local_size), comm=PETSc.COMM_SELF)
-    is_global = PETSc.IS().createGeneral(range(local_size), comm=PETSc.COMM_WORLD)
+    is_local = PETSc.IS().createGeneral(range(local_size), comm=COMM_SELF)
+    is_global = PETSc.IS().createGeneral(range(local_size), comm=COMM_WORLD)
 
     # Create a scatter context that will allow us to scatter the values from the local vector to the global vector.
     scatter_ctx = PETSc.Scatter().create(v_local, is_local, v_global, is_global)
@@ -149,6 +147,35 @@ def scatter_local_to_global_vector(v_local):
     v_global.assemblyEnd()
 
     return v_global
+
+
+def get_complete_vec_local(v_global):
+    """
+    Fetch the complete global vector `v_global` to a local sequential vector on all ranks.
+
+    Args:
+        v_global (PETSc Vec): Global MPI PETSc vector.
+
+    Returns:
+        PETSc Vec: Local sequential vector having the complete values of `v_global`.
+    """
+    # Create a local sequential vector of the same size as the global vector.
+    global_size = v_global.getSize()
+    v_local_complete = PETSc.Vec().createSeq(global_size, comm=COMM_SELF)
+
+    # Create index sets for global and local vectors.
+    local_range = range(global_size)
+    is_local_complete = PETSc.IS().createGeneral(local_range, comm=COMM_SELF)
+    is_global = PETSc.IS().createGeneral(local_range, comm=COMM_WORLD)
+
+    # Step 4: Create scatter context and perform scatter operation.
+    scatter_ctx = PETSc.Scatter().create(
+        v_global, is_global, v_local_complete, is_local_complete
+    )
+    # scatter_ctx.scatter(v_global, v_local_complete, mode=PETSc.ScatterMode.FORWARD)
+    scatter_ctx.scatter(v_global, v_local_complete, mode=0)
+
+    return v_local_complete
 
 
 # --------------------------------------------
@@ -165,19 +192,22 @@ b_np = np.random.randint(low=0, high=6, size=m)
 
 # Create B as a sequential matrix on each process
 b = create_petsc_vector(b_np)
-print_vector_partitioning(b, "vector b")
+# print_vector_partitioning(b, "vector b")
 
 A = create_petsc_matrix(A_np)
-# print_mat_info(A, "matrix A")
-print_matrix_partitioning(A, "matrix A")
+# print_matrix_partitioning(A, "matrix A")
+# print_matrix_partitioning(A, "matrix A")
 
 # Multiplication of 2 sequential matrices
 c_local = multiply_matrix_transpose_to_vector(A, b)
-print_vector_partitioning(c_local, "vector c_local")
-
+# print_vector_partitioning(c_local, "vector c_local")
 
 c = scatter_local_to_global_vector(c_local)
-print_vector_partitioning(c, "vector c")
+# print_vector_partitioning(c, "vector c")
+
+# Assuming c is your global PETSc vector
+c_local_complete = get_complete_vec_local(c)
+print_vector_partitioning(c_local_complete, "vector c_local_complete")
 
 # --------------------------------------------
 # TEST: Multiplication of a numpy matrix and a numpy vector
@@ -189,6 +219,7 @@ Print(Ab_np)
 # Get the local values from C
 local_rows_start, local_rows_end = c.getOwnershipRange()
 c_test = c.getArray()[local_rows_start:local_rows_end]
+print(f"For rank {rank}: c_test {c_test}")
 
 # Assert the correctness of the multiplication for the local subset
 assert_array_almost_equal(c_test, Ab_np[local_rows_start:local_rows_end], decimal=5)

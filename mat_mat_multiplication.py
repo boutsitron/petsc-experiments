@@ -1,12 +1,12 @@
 """Experimenting with PETSc mat-mat multiplication"""
 
 import numpy as np
-from firedrake import COMM_WORLD
+from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 from mpi4py import MPI
 from numpy.testing import assert_array_almost_equal
 
-from utilities import Print, print_mat_info
+from utilities import Print, print_matrix_partitioning
 
 # import pdb
 
@@ -26,7 +26,7 @@ def create_petsc_matrix_seq(input_array):
     assert len(input_array.shape) == 2
 
     m, n = input_array.shape
-    matrix = PETSc.Mat().createAIJ(size=(m, n), comm=PETSc.COMM_SELF)
+    matrix = PETSc.Mat().createAIJ(size=(m, n), comm=COMM_SELF)
     matrix.setUp()
 
     matrix.setValues(range(m), range(n), input_array, addv=False)
@@ -181,10 +181,10 @@ B_np = np.random.randint(low=0, high=6, size=(k, k))
 
 # Create B as a sequential matrix on each process
 B_seq = create_petsc_matrix_seq(B_np)
-print_mat_info(B_seq, "B")
+print_matrix_partitioning(B_seq, "B")
 
 A = create_petsc_matrix(A_np)
-print_mat_info(A, "A")
+print_matrix_partitioning(A, "A")
 
 
 # Getting the correct local submatrix to be multiplied by B_seq
@@ -195,7 +195,7 @@ C_local = multiply_matrices_seq(A_local, B_seq)
 
 # Creating the global C matrix
 C = concatenate_local_to_global_matrix(C_local)
-print_mat_info(C, "C")
+print_matrix_partitioning(C, "C")
 
 # --------------------------------------------
 # TEST: Multiplication of 2 numpy matrices

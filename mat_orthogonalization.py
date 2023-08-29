@@ -68,6 +68,45 @@ def convert_global_matrix_to_seq(A):
     return A_seq
 
 
+def convert_seq_matrix_to_global(A_seq, partition=None):
+    """Convert a duplicated sequential matrix to a partitioned global matrix.
+
+    Args:
+        A_seq (PETSc.Mat): Sequential matrix that is duplicated across all processors.
+        partition (tuple, optional): The partition of the global matrix. Defaults to None.
+
+    Returns:
+        PETSc.Mat: A partitioned global matrix.
+    """
+    global_rows, global_cols = A_seq.getSize()
+
+    # Determine the local portion of the vector
+    if partition is not None:
+        local_rows_start, local_rows_end = partition
+        local_rows = local_rows_end - local_rows_start
+
+        size = ((local_rows, global_rows), (global_cols, global_cols))
+    else:
+        size = ((None, global_rows), (global_cols, global_cols))
+
+    # Create the global partitioned matrix with the same dimensions
+    A_global = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
+    A_global.setUp()
+
+    # Determine the rows that this process will own in the global matrix
+    local_rows_start, local_rows_end = A_global.getOwnershipRange()
+
+    # Populate the global matrix
+    for i in range(local_rows_start, local_rows_end):
+        cols, values = A_seq.getRow(i)
+        A_global.setValues(i, cols, values)
+
+    A_global.assemblyBegin()
+    A_global.assemblyEnd()
+
+    return A_global
+
+
 def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow
     """Checking and correcting orthogonality
 
@@ -91,17 +130,22 @@ def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow
     if abs(dot_product) > min(EPSILON_SVD, EPS * m):
         Print("    Basis has lost (numerical) orthogonality", Fore.RED)
 
+        local_rows_start, local_rows_end = PPhi.getOwnershipRange()
+
         # Type can be CHOL, GS, mro(), SVQB, TSQR, TSQRCHOL
         _type = SLEPc.BV().OrthogBlockType.GS
 
         # Check if the matrix is dense
         mat_type = PPhi.getType()
 
+        # if it's dense it's good to go
         if "dense" in mat_type:
             bv = SLEPc.BV().createFromMat(PPhi)
+        # if it's sparse and partitioned, convert it to sequential and then to dense
         elif "seq" not in mat_type:
             PPhi_seq = convert_global_matrix_to_seq(PPhi)
             bv = SLEPc.BV().createFromMat(PPhi_seq.convert("dense"))
+        # if it's sparse and sequential, convert it to dense
         else:
             bv = SLEPc.BV().createFromMat(PPhi.convert("dense"))
         bv.setFromOptions()
@@ -110,10 +154,11 @@ def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow
 
         PPhi = bv.createMat()
 
-        # # Assembly the matrix to compute the final structure
-        if not PPhi.assembled:
-            PPhi.assemblyBegin()
-            PPhi.assemblyEnd()
+        if "seq" in PPhi.getType():
+            PPhi = convert_seq_matrix_to_global(
+                PPhi, partition=(local_rows_start, local_rows_end)
+            )
+
     else:
         Print("    Basis is orthogonal", Fore.GREEN)
 

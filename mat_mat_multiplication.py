@@ -13,8 +13,6 @@ from utilities import (
     print_matrix_partitioning,
 )
 
-# import pdb
-
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
 
@@ -62,40 +60,60 @@ def multiply_matrices_seq(A_seq, B_seq):
     return C_local
 
 
-def concatenate_local_to_global_matrix(C_local):
-    """Create the global matrix C from the local submatrix C_local
+def concatenate_local_to_global_matrix(
+    local_matrix, partition_like=None, mat_type=None
+):
+    """Create the global matrix C from the local submatrix local_matrix
 
     Args:
-        C_local (seqaij): local submatrix of C
+        local_matrix (seqaij): local submatrix of global_matrix
+        partition_like (mpiaij): partitioned PETSc matrix
+        mat_type (str): type of the global matrix. Defaults to None. If None, the type of local_matrix is used.
 
     Returns:
-        mpi PETSc mat: partitioned PETSc matrix C
+        mpi PETSc mat: partitioned PETSc matrix
     """
-    C_local_rows, C_local_cols = C_local.getSize()
+    local_matrix_rows, local_matrix_cols = local_matrix.getSize()
+    global_rows = COMM_WORLD.allreduce(local_matrix_rows, op=MPI.SUM)
 
-    # Get the global number of rows for C matrix using MPI Allreduce
-    global_rows = COMM_WORLD.allreduce(C_local_rows, op=MPI.SUM)
+    # Determine the local portion of the vector
+    if partition_like is not None:
+        local_rows_start, local_rows_end = partition_like.getOwnershipRange()
+        local_rows = local_rows_end - local_rows_start
 
-    C = PETSc.Mat().createAIJ(
-        size=((None, global_rows), (C_local_cols, C_local_cols)), comm=COMM_WORLD
-    )
-    C.setUp()
+        size = ((local_rows, global_rows), (local_matrix_cols, local_matrix_cols))
+    else:
+        size = ((None, global_rows), (local_matrix_cols, local_matrix_cols))
+
+    if mat_type is None:
+        mat_type = local_matrix.getType()
+
+    if "dense" in mat_type:
+        sparse = False
+    else:
+        sparse = True
+
+    if sparse:
+        global_matrix = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
+    else:
+        global_matrix = PETSc.Mat().createDense(size=size, comm=COMM_WORLD)
+    global_matrix.setUp()
 
     # The exscan operation is used to get the starting global row for each process.
     # The result of the exclusive scan is the sum of the local rows from previous ranks.
-    global_row_start = COMM_WORLD.exscan(C_local_rows, op=MPI.SUM)
+    global_row_start = COMM_WORLD.exscan(local_matrix_rows, op=MPI.SUM)
     if rank == 0:
         global_row_start = 0
 
-    for i in range(C_local_rows):
-        cols, values = C_local.getRow(i)
+    for i in range(local_matrix_rows):
+        cols, values = local_matrix.getRow(i)
         global_row = i + global_row_start
-        C.setValues(global_row, cols, values)
+        global_matrix.setValues(global_row, cols, values)
 
-    C.assemblyBegin()
-    C.assemblyEnd()
+    global_matrix.assemblyBegin()
+    global_matrix.assemblyEnd()
 
-    return C
+    return global_matrix
 
 
 # --------------------------------------------
@@ -132,7 +150,7 @@ print_matrix_partitioning(C, "C")
 # --------------------------------------------
 AB_np = np.dot(A_np, B_np)
 Print(f"MATRIX AB_np [{AB_np.shape[0]}x{AB_np.shape[1]}]")
-Print(AB_np)
+Print(f"{AB_np}")
 
 # Get the local values from C
 local_rows_start, local_rows_end = C.getOwnershipRange()

@@ -167,12 +167,11 @@ print_vector_partitioning(c_local_complete, "vector c_local_complete")
 # --------------------------------------------
 Ab_np = np.dot(A_np.T, b_np.flatten())
 Print(f"Vector Ab_np [{Ab_np.shape[0]}]")
-Print(Ab_np)
+Print(f"{Ab_np}")
 
 # Get the local values from C
 local_rows_start, local_rows_end = c.getOwnershipRange()
 c_test = c.getArray()[local_rows_start:local_rows_end]
-print(f"For rank {rank}: c_test {c_test}")
 
 # Assert the correctness of the multiplication for the local subset
 assert_array_almost_equal(c_test, Ab_np[local_rows_start:local_rows_end], decimal=5)

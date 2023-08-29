@@ -180,9 +180,6 @@ def get_local_submatrix(A):
     _, k = A.getSize()  # Get the number of columns (k) from A's size
     cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
 
-    # print(f"For proc {rank} rows indices: {rows.getIndices()}")
-    # Print(f"For proc {rank} cols indices: {cols.getIndices()}")
-
     # Getting the local submatrix
     # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
     A_local = A.createSubMatrices(rows, cols)[0]

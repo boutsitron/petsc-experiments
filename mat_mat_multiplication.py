@@ -6,7 +6,12 @@ from firedrake.petsc import PETSc
 from mpi4py import MPI
 from numpy.testing import assert_array_almost_equal
 
-from utilities import Print, print_matrix_partitioning
+from utilities import (
+    Print,
+    create_petsc_matrix,
+    get_local_submatrix,
+    print_matrix_partitioning,
+)
 
 # import pdb
 
@@ -36,80 +41,6 @@ def create_petsc_matrix_seq(input_array):
     matrix.assemblyEnd()
 
     return matrix
-
-
-def create_petsc_matrix(input_array, partition_like=None, sparse=True):
-    """Create a PETSc matrix from an input_array
-
-    Args:
-        input_array (np array): Input array
-        partition_like (PETSc mat, optional): Petsc matrix. Defaults to None.
-        sparse (bool, optional): Toggle for sparese or dense. Defaults to True.
-
-    Returns:
-        PETSc mat: PETSc matrix
-    """
-    # Check if input_array is 1D and reshape if necessary
-    assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
-    global_rows, global_cols = input_array.shape
-
-    if partition_like is not None:
-        local_rows_start, local_rows_end = partition_like.getOwnershipRange()
-        local_rows = local_rows_end - local_rows_start
-
-        # No parallelization in the columns, set local_cols = None to parallelize
-        size = ((local_rows, global_rows), (global_cols, global_cols))
-    else:
-        size = ((None, global_rows), (global_cols, global_cols))
-
-    # Create a sparse or dense matrix based on the 'sparse' argument
-    if sparse:
-        matrix = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
-    else:
-        matrix = PETSc.Mat().createDense(size=size, comm=COMM_WORLD)
-    matrix.setUp()
-
-    local_rows_start, local_rows_end = matrix.getOwnershipRange()
-
-    for counter, i in enumerate(range(local_rows_start, local_rows_end)):
-        # Calculate the correct row in the array for the current process
-        row_in_array = counter + local_rows_start
-        matrix.setValues(
-            i, range(global_cols), input_array[row_in_array, :], addv=False
-        )
-
-    # Assembly the matrix to compute the final structure
-    matrix.assemblyBegin()
-    matrix.assemblyEnd()
-
-    return matrix
-
-
-def get_local_submatrix(A):
-    """Get the local submatrix of A
-
-    Args:
-        A (mpi PETSc mat): partitioned PETSc matrix
-
-    Returns:
-        seq mat: PETSc matrix
-    """
-    local_rows_start, local_rows_end = A.getOwnershipRange()
-    local_rows = local_rows_end - local_rows_start
-    comm = A.getComm()
-    rows = PETSc.IS().createStride(
-        local_rows, first=local_rows_start, step=1, comm=comm
-    )
-    _, k = A.getSize()  # Get the number of columns (k) from A's size
-    cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
-
-    # print(f"For proc {rank} rows indices: {rows.getIndices()}")
-    # Print(f"For proc {rank} cols indices: {cols.getIndices()}")
-
-    # Getting the local submatrix
-    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
-    A_local = A.createSubMatrices(rows, cols)[0]
-    return A_local
 
 
 def multiply_matrices_seq(A_seq, B_seq):
@@ -168,7 +99,7 @@ def concatenate_local_to_global_matrix(C_local):
 
 
 # --------------------------------------------
-# TEST: Multiplication of an mpi PETSc matrix with a sequential PETSc matrix
+# EXP: Multiplication of an mpi PETSc matrix with a sequential PETSc matrix
 #  C = A * B
 # [m x k] = [m x k] * [k x k]
 # --------------------------------------------
@@ -185,7 +116,6 @@ print_matrix_partitioning(B_seq, "B")
 
 A = create_petsc_matrix(A_np)
 print_matrix_partitioning(A, "A")
-
 
 # Getting the correct local submatrix to be multiplied by B_seq
 A_local = get_local_submatrix(A)

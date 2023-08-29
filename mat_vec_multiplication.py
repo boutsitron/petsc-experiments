@@ -1,11 +1,11 @@
-"""Experimenting with PETSc mat-mat multiplication"""
+"""Experimenting with PETSc mat-vec multiplication"""
 
 import numpy as np
 from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 from numpy.testing import assert_array_almost_equal
 
-from utilities import Print, print_vector_partitioning
+from utilities import Print, create_petsc_matrix, print_vector_partitioning
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
@@ -37,53 +37,6 @@ def create_petsc_vector(input_array):
     vector.assemblyEnd()
 
     return vector
-
-
-def create_petsc_matrix(input_array, partition_like=None, sparse=True):
-    """Create a PETSc matrix from an input_array
-
-    Args:
-        input_array (np array): Input array
-        partition_like (PETSc mat, optional): Petsc matrix. Defaults to None.
-        sparse (bool, optional): Toggle for sparese or dense. Defaults to True.
-
-    Returns:
-        PETSc mat: PETSc matrix
-    """
-    # Check if input_array is 1D and reshape if necessary
-    assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
-    global_rows, global_cols = input_array.shape
-
-    if partition_like is not None:
-        local_rows_start, local_rows_end = partition_like.getOwnershipRange()
-        local_rows = local_rows_end - local_rows_start
-
-        # No parallelization in the columns, set local_cols = None to parallelize
-        size = ((local_rows, global_rows), (global_cols, global_cols))
-    else:
-        size = ((None, global_rows), (global_cols, global_cols))
-
-    # Create a sparse or dense matrix based on the 'sparse' argument
-    if sparse:
-        matrix = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
-    else:
-        matrix = PETSc.Mat().createDense(size=size, comm=COMM_WORLD)
-    matrix.setUp()
-
-    local_rows_start, local_rows_end = matrix.getOwnershipRange()
-
-    for counter, i in enumerate(range(local_rows_start, local_rows_end)):
-        # Calculate the correct row in the array for the current process
-        row_in_array = counter + local_rows_start
-        matrix.setValues(
-            i, range(global_cols), input_array[row_in_array, :], addv=False
-        )
-
-    # Assembly the matrix to compute the final structure
-    matrix.assemblyBegin()
-    matrix.assemblyEnd()
-
-    return matrix
 
 
 def multiply_matrix_transpose_to_vector(A, b):
@@ -179,8 +132,8 @@ def get_complete_vec_local(v_global):
 
 
 # --------------------------------------------
-# TEST: Multiplication of an mpi PETSc matrix with a sequential PETSc vector
-#  c = A.T * b
+# EXP: Multiplication of the transpose of mpi PETSc matrix with a sequential PETSc vector
+# c = A.T * b
 # [k x 1] = [m x k].T * [m x 1]
 # --------------------------------------------
 

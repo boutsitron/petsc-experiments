@@ -16,7 +16,7 @@ from utilities import (
     print_matrix_partitioning,
 )
 
-size = COMM_WORLD.size
+nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
 
 
@@ -63,8 +63,64 @@ def multiply_matrices_seq(A_seq, B_seq):
     return C_local
 
 
+def concatenate_inefficient(
+    local_matrix, global_matrix, local_matrix_rows, global_row_start
+):
+    """Concatenate the local matrix to the global matrix
+
+    Args:
+        local_matrix (int): local submatrix of global_matrix
+        global_matrix (PETSc mat): global matrix
+        local_matrix_rows (int): number of rows in the local matrix
+        global_row_start (int): starting global row for the local matrix
+
+    Returns:
+        PETSc mat: global matrix
+    """
+    # This works but is very inefficient
+    for i in range(local_matrix_rows):
+        cols, values = local_matrix.getRow(i)
+        global_row = i + global_row_start
+        # print(
+        #     f"For proc {rank}: Setting values for row {global_row} for {len(cols)} columns {cols} with {len(values)} values {values}"
+        # )
+        global_matrix.setValues(global_row, cols, values)
+
+    return global_matrix
+
+
+def concatenate_efficient(
+    local_matrix, global_matrix, local_matrix_rows, global_row_start, local_matrix_cols
+):
+    """Concatenate the local matrix to the global matrix
+
+    Args:
+        local_matrix (PETSc mat): local submatrix of global_matrix
+        global_matrix (PETSc mat): global matrix
+        local_matrix_rows (int): number of rows in the local matrix
+        global_row_start (int): starting global row for the local matrix
+        local_matrix_cols (int): number of columns in the local matrix
+
+    Returns:
+        PETSc mat: global matrix
+    """
+    all_values = []
+    all_global_rows = [i + global_row_start for i in range(local_matrix_rows)]
+    all_values = [local_matrix.getRow(i)[1] for i in range(len(all_global_rows))]
+
+    for j in range(local_matrix_cols):
+        values = [all_values[i][j] for i in range(len(all_values))]
+
+        print(
+            f"For proc {rank}: Setting values for {len(all_global_rows)} rows {all_global_rows} for {j} column with {len(values)} values {values}"
+        )
+        global_matrix.setValues(all_global_rows, j, values)
+
+    return global_matrix
+
+
 def concatenate_local_to_global_matrix(
-    local_matrix, partition_like=None, mat_type=None
+    local_matrix, partition_like=None, mat_type=None, efficient=True
 ):
     """Create the global matrix C from the local submatrix local_matrix
 
@@ -78,9 +134,6 @@ def concatenate_local_to_global_matrix(
     """
     local_matrix_rows, local_matrix_cols = local_matrix.getSize()
     global_rows = COMM_WORLD.allreduce(local_matrix_rows, op=MPI.SUM)
-
-    print(f"Local matrix size {local_matrix_rows}x{local_matrix_cols}")
-    print(f"Global matrix size: {global_rows}x{local_matrix_cols}")
 
     # Determine the local portion of the vector
     if partition_like is not None:
@@ -111,43 +164,27 @@ def concatenate_local_to_global_matrix(
     if rank == 0:
         global_row_start = 0
 
-    concatenate_start_3 = time.time()
+    concatenate_start = time.time()
 
-    # for i in range(local_matrix_rows):
-    #     cols, values = local_matrix.getRow(i)
-    #     global_row = i + global_row_start
-    #     global_matrix.setValues(global_row, cols, values)
+    if efficient:
+        global_matrix = concatenate_efficient(
+            local_matrix,
+            global_matrix,
+            local_matrix_rows,
+            global_row_start,
+            local_matrix_cols,
+        )
+    else:
+        global_matrix = concatenate_inefficient(
+            local_matrix, global_matrix, local_matrix_rows, global_row_start
+        )
 
-    all_cols = []
-    all_values = []
-    all_global_rows = [i + global_row_start for i in range(local_matrix_rows)]
+    concatenate_end = time.time()
+    concatenate_time = concatenate_end - concatenate_start
+    # global_concatenate_time = COMM_WORLD.allreduce(concatenate_time, op=MPI.SUM)
 
-    for i in range(len(all_global_rows)):
-        cols, values = local_matrix.getRow(i)
-        # print(f"cols: {cols}, values: {values}")
-        all_cols.append(cols)
-        all_values.append(values)
-
-    print(len(all_cols), all_cols[0])
-    print(len(all_values), all_values[0])
-    print(len(all_global_rows), all_global_rows[0])
-    print()
-
-    for j in range(local_matrix_cols):
-        columns = [all_cols[i][j] for i in range(len(all_cols))]
-        values = [all_values[i][j] for i in range(len(all_values))]
-
-        print(np.shape(columns), columns[0])
-        print(np.shape(values), values[0])
-        print(np.shape(all_global_rows), all_global_rows[0])
-
-        global_matrix.setValues(all_global_rows, columns, values)
-
-    concatenate_start_4 = time.time()
-    Print(
-        f"  -Setting values: {concatenate_start_4 - concatenate_start_3: 2.2f} s",
-        Fore.GREEN,
-    )
+    print("")
+    Print(f"  -Setting values: {concatenate_time: 2.2f} s", Fore.GREEN)
 
     global_matrix.assemblyBegin()
     global_matrix.assemblyEnd()
@@ -181,7 +218,11 @@ A_local = get_local_submatrix(A)
 C_local = multiply_matrices_seq(A_local, B_seq)
 
 # Creating the global C matrix
-C = concatenate_local_to_global_matrix(C_local) if size > 1 else C_local
+C = (
+    concatenate_local_to_global_matrix(C_local, efficient=False)
+    if nproc > 1
+    else C_local
+)
 print_matrix_partitioning(C, "C")
 
 # --------------------------------------------

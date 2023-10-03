@@ -1,6 +1,9 @@
 """Experimenting with PETSc mat-mat multiplication"""
 
+import time
+
 import numpy as np
+from colorama import Fore
 from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 from mpi4py import MPI
@@ -13,7 +16,7 @@ from utilities import (
     print_matrix_partitioning,
 )
 
-nproc = COMM_WORLD.size
+size = COMM_WORLD.size
 rank = COMM_WORLD.rank
 
 
@@ -76,6 +79,9 @@ def concatenate_local_to_global_matrix(
     local_matrix_rows, local_matrix_cols = local_matrix.getSize()
     global_rows = COMM_WORLD.allreduce(local_matrix_rows, op=MPI.SUM)
 
+    print(f"Local matrix size {local_matrix_rows}x{local_matrix_cols}")
+    print(f"Global matrix size: {global_rows}x{local_matrix_cols}")
+
     # Determine the local portion of the vector
     if partition_like is not None:
         local_rows_start, local_rows_end = partition_like.getOwnershipRange()
@@ -105,10 +111,43 @@ def concatenate_local_to_global_matrix(
     if rank == 0:
         global_row_start = 0
 
-    for i in range(local_matrix_rows):
+    concatenate_start_3 = time.time()
+
+    # for i in range(local_matrix_rows):
+    #     cols, values = local_matrix.getRow(i)
+    #     global_row = i + global_row_start
+    #     global_matrix.setValues(global_row, cols, values)
+
+    all_cols = []
+    all_values = []
+    all_global_rows = [i + global_row_start for i in range(local_matrix_rows)]
+
+    for i in range(len(all_global_rows)):
         cols, values = local_matrix.getRow(i)
-        global_row = i + global_row_start
-        global_matrix.setValues(global_row, cols, values)
+        # print(f"cols: {cols}, values: {values}")
+        all_cols.append(cols)
+        all_values.append(values)
+
+    print(len(all_cols), all_cols[0])
+    print(len(all_values), all_values[0])
+    print(len(all_global_rows), all_global_rows[0])
+    print()
+
+    for j in range(local_matrix_cols):
+        columns = [all_cols[i][j] for i in range(len(all_cols))]
+        values = [all_values[i][j] for i in range(len(all_values))]
+
+        print(np.shape(columns), columns[0])
+        print(np.shape(values), values[0])
+        print(np.shape(all_global_rows), all_global_rows[0])
+
+        global_matrix.setValues(all_global_rows, columns, values)
+
+    concatenate_start_4 = time.time()
+    Print(
+        f"  -Setting values: {concatenate_start_4 - concatenate_start_3: 2.2f} s",
+        Fore.GREEN,
+    )
 
     global_matrix.assemblyBegin()
     global_matrix.assemblyEnd()
@@ -142,7 +181,7 @@ A_local = get_local_submatrix(A)
 C_local = multiply_matrices_seq(A_local, B_seq)
 
 # Creating the global C matrix
-C = concatenate_local_to_global_matrix(C_local)
+C = concatenate_local_to_global_matrix(C_local) if size > 1 else C_local
 print_matrix_partitioning(C, "C")
 
 # --------------------------------------------

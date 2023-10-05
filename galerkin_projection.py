@@ -8,6 +8,7 @@ from utilities import (
     Print,
     concatenate_local_to_global_matrix,
     convert_global_matrix_to_seq,
+    convert_seq_matrix_to_global,
     create_petsc_matrix,
     create_petsc_matrix_seq,
     get_local_submatrix,
@@ -59,9 +60,13 @@ APhi = (
 APhi_seq = convert_global_matrix_to_seq(APhi)
 
 # Step 2: Compute A' = Phi.T * APhi
-A_prime = create_petsc_matrix_seq(np.zeros((k, k)))
-A_prime = Phi_seq.transposeMatMult(APhi_seq)
+A_prime_seq = create_petsc_matrix_seq(np.zeros((k, k)))
+A_prime_seq = Phi_seq.transposeMatMult(APhi_seq)
+print_matrix_partitioning(A_prime_seq, "A_prime_seq")
+
+A_prime = convert_seq_matrix_to_global(A_prime_seq)
 print_matrix_partitioning(A_prime, "A_prime")
+
 
 # Perform the PtAP (Phi Transpose times A times Phi) operation.
 # In mathematical terms, this operation is A' = Phi.T * A * Phi.
@@ -78,9 +83,9 @@ Print(f"{Aprime_np}")
 
 # Get the local values from C
 local_rows_start, local_rows_end = A_prime.getOwnershipRange()
-Aprime_local = A_prime.getValues(range(local_rows_start, local_rows_end), range(k))
+Aprime = A_prime.getValues(range(local_rows_start, local_rows_end), range(k))
 
 # Assert the correctness of the multiplication for the local subset
 assert_array_almost_equal(
-    Aprime_local, Aprime_np[local_rows_start:local_rows_end, :], decimal=5
+    Aprime, Aprime_np[local_rows_start:local_rows_end, :], decimal=5
 )

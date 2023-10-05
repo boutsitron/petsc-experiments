@@ -7,11 +7,11 @@ import time
 import numpy as np
 from colorama import Fore
 from firedrake import COMM_WORLD
-from firedrake.petsc import PETSc
 
 from utilities import (
     Print,
     convert_global_matrix_to_seq,
+    convert_seq_matrix_to_global,
     create_petsc_matrix,
     print_matrix_partitioning,
 )
@@ -27,45 +27,6 @@ from numpy.testing import assert_array_almost_equal
 rank = COMM_WORLD.rank
 EPSILON_SVD = 1e-4
 EPS = sys.float_info.epsilon
-
-
-def convert_seq_matrix_to_global(A_seq, partition=None):
-    """Convert a duplicated sequential matrix to a partitioned global matrix.
-
-    Args:
-        A_seq (PETSc.Mat): Sequential matrix that is duplicated across all processors.
-        partition (tuple, optional): The partition of the global matrix. Defaults to None.
-
-    Returns:
-        PETSc.Mat: A partitioned global matrix.
-    """
-    global_rows, global_cols = A_seq.getSize()
-
-    # Determine the local portion of the vector
-    if partition is not None:
-        local_rows_start, local_rows_end = partition
-        local_rows = local_rows_end - local_rows_start
-
-        size = ((local_rows, global_rows), (global_cols, global_cols))
-    else:
-        size = ((None, global_rows), (global_cols, global_cols))
-
-    # Create the global partitioned matrix with the same dimensions
-    A_global = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
-    A_global.setUp()
-
-    # Determine the rows that this process will own in the global matrix
-    local_rows_start, local_rows_end = A_global.getOwnershipRange()
-
-    # Populate the global matrix
-    for i in range(local_rows_start, local_rows_end):
-        cols, values = A_seq.getRow(i)
-        A_global.setValues(i, cols, values)
-
-    A_global.assemblyBegin()
-    A_global.assemblyEnd()
-
-    return A_global
 
 
 def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow

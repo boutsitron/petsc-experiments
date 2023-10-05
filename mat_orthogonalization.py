@@ -6,13 +6,13 @@ import time
 
 import numpy as np
 from colorama import Fore
-from firedrake import COMM_SELF, COMM_WORLD
+from firedrake import COMM_WORLD
 from firedrake.petsc import PETSc
 
 from utilities import (
     Print,
+    convert_global_matrix_to_seq,
     create_petsc_matrix,
-    get_local_submatrix,
     print_matrix_partitioning,
 )
 
@@ -27,45 +27,6 @@ from numpy.testing import assert_array_almost_equal
 rank = COMM_WORLD.rank
 EPSILON_SVD = 1e-4
 EPS = sys.float_info.epsilon
-
-
-def convert_global_matrix_to_seq(A):
-    """Convert a partitioned matrix to a sequential one such that each processor holds a duplicate of the full matrix.
-
-    Args:
-        A (PETSc.Mat): The partitioned matrix
-
-    Returns:
-        PETSc.Mat: The sequential matrix
-    """
-    # Step 1: Get the local submatrix
-    A_local = get_local_submatrix(A)
-
-    # Step 2: Convert the local submatrix to numpy array
-    A_local_rows, A_local_cols = A_local.getSize()
-    A_local_array = np.zeros((A_local_rows, A_local_cols))
-    for i in range(A_local_rows):
-        _, values = A_local.getRow(i)
-        A_local_array[i, :] = values
-
-    # Step 3: Use allgather to collect all local matrices to all processes
-    gathered_data = COMM_WORLD.allgather(A_local_array)
-
-    # Step 4: Stack the local matrices to create the full sequential matrix
-    full_matrix_array = np.vstack(gathered_data)
-
-    # Step 5: Create a new sequential PETSc matrix
-    m, n = full_matrix_array.shape
-    A_seq = PETSc.Mat().createDense([m, n], comm=COMM_SELF)
-    A_seq.setUp()
-
-    for i in range(m):
-        A_seq.setValues(i, list(range(n)), full_matrix_array[i, :])
-
-    A_seq.assemblyBegin()
-    A_seq.assemblyEnd()
-
-    return A_seq
 
 
 def convert_seq_matrix_to_global(A_seq, partition=None):

@@ -1,8 +1,12 @@
 """Utility functions for parallel handling"""
 
+import time
+
+import numpy as np
 from colorama import Fore, Style
 from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
+from mpi4py import MPI
 
 rank = COMM_WORLD.rank
 
@@ -40,8 +44,13 @@ def print_matrix_partitioning(mat, name="", values=False):  # sourcery skip: mov
     all_local_rows = COMM_WORLD.gather(local_rows, root=0)
 
     if rank == 0:
-        print(f"MATRIX {name} [{mat.getSize()[0]}x{mat.getSize()[1]}]")
-        print(mat.getType())
+        print(
+            f"{Fore.YELLOW}MATRIX {mat.getType()} {name} [{mat.getSize()[0]}x{mat.getSize()[1]}]{Style.RESET_ALL}"
+        )
+        if mat.isAssembled():
+            print(f"{Fore.GREEN}Assembled{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.RED}Not Assembled{Style.RESET_ALL}")
         print("")
         print(f"Partitioning for {name}:")
         for i, ((start, end), local_rows) in enumerate(
@@ -85,6 +94,30 @@ def print_vector_partitioning(vec, name="", values=False):
             if values:
                 print(f"  Local Values: {local_vals}")
         print()
+
+
+def create_petsc_matrix_seq(input_array):
+    """Building a sequential PETSc matrix from an array
+
+    Args:
+        input_array (np array): Input array
+
+    Returns:
+        seq mat: PETSc matrix
+    """
+    assert len(input_array.shape) == 2
+
+    m, n = input_array.shape
+    matrix = PETSc.Mat().createAIJ(size=(m, n), comm=COMM_SELF)
+    matrix.setUp()
+
+    matrix.setValues(range(m), range(n), input_array, addv=False)
+
+    # Assembly the matrix to compute the final structure
+    matrix.assemblyBegin()
+    matrix.assemblyEnd()
+
+    return matrix
 
 
 def create_petsc_matrix(input_array, partition_like=None, sparse=True):
@@ -184,3 +217,167 @@ def get_local_submatrix(A):
     # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
     A_local = A.createSubMatrices(rows, cols)[0]
     return A_local
+
+
+def convert_global_matrix_to_seq(A):
+    """Convert a partitioned matrix to a sequential one such that each processor holds a duplicate of the full matrix.
+
+    Args:
+        A (PETSc.Mat): The partitioned matrix
+
+    Returns:
+        PETSc.Mat: The sequential matrix
+    """
+    # Step 1: Get the local submatrix
+    A_local = get_local_submatrix(A)
+
+    # Step 2: Convert the local submatrix to numpy array
+    A_local_rows, A_local_cols = A_local.getSize()
+    A_local_array = np.zeros((A_local_rows, A_local_cols))
+    for i in range(A_local_rows):
+        _, values = A_local.getRow(i)
+        A_local_array[i, :] = values
+
+    # Step 3: Use allgather to collect all local matrices to all processes
+    gathered_data = COMM_WORLD.allgather(A_local_array)
+
+    # Step 4: Stack the local matrices to create the full sequential matrix
+    full_matrix_array = np.vstack(gathered_data)
+
+    # Step 5: Create a new sequential PETSc matrix
+    m, n = full_matrix_array.shape
+    A_seq = PETSc.Mat().createDense([m, n], comm=COMM_SELF)
+    A_seq.setUp()
+
+    for i in range(m):
+        A_seq.setValues(i, list(range(n)), full_matrix_array[i, :])
+
+    A_seq.assemblyBegin()
+    A_seq.assemblyEnd()
+
+    return A_seq
+
+
+def concatenate_inefficient(
+    local_matrix, global_matrix, local_matrix_rows, global_row_start
+):
+    """Concatenate the local matrix to the global matrix
+
+    Args:
+        local_matrix (int): local submatrix of global_matrix
+        global_matrix (PETSc mat): global matrix
+        local_matrix_rows (int): number of rows in the local matrix
+        global_row_start (int): starting global row for the local matrix
+
+    Returns:
+        PETSc mat: global matrix
+    """
+    # This works but is very inefficient
+    for i in range(local_matrix_rows):
+        cols, values = local_matrix.getRow(i)
+        global_row = i + global_row_start
+        # print(
+        #     f"For proc {rank}: Setting values for row {global_row} for {len(cols)} columns {cols} with {len(values)} values {values}"
+        # )
+        global_matrix.setValues(global_row, cols, values)
+
+    return global_matrix
+
+
+def concatenate_efficient(
+    local_matrix, global_matrix, local_matrix_rows, global_row_start, local_matrix_cols
+):
+    """Concatenate the local matrix to the global matrix
+
+    Args:
+        local_matrix (PETSc mat): local submatrix of global_matrix
+        global_matrix (PETSc mat): global matrix
+        local_matrix_rows (int): number of rows in the local matrix
+        global_row_start (int): starting global row for the local matrix
+        local_matrix_cols (int): number of columns in the local matrix
+
+    Returns:
+        PETSc mat: global matrix
+    """
+    all_values = []
+    all_global_rows = [i + global_row_start for i in range(local_matrix_rows)]
+    all_values = [local_matrix.getRow(i)[1] for i in range(len(all_global_rows))]
+
+    for j in range(local_matrix_cols):
+        values = [all_values[i][j] for i in range(len(all_values))]
+        global_matrix.setValues(all_global_rows, j, values)
+
+    return global_matrix
+
+
+def concatenate_local_to_global_matrix(
+    local_matrix, partition_like=None, mat_type=None, efficient=True
+):
+    """Create the global matrix C from the local submatrix local_matrix
+
+    Args:
+        local_matrix (seqaij): local submatrix of global_matrix
+        partition_like (mpiaij): partitioned PETSc matrix
+        mat_type (str): type of the global matrix. Defaults to None. If None, the type of local_matrix is used.
+
+    Returns:
+        mpi PETSc mat: partitioned PETSc matrix
+    """
+    local_matrix_rows, local_matrix_cols = local_matrix.getSize()
+    global_rows = COMM_WORLD.allreduce(local_matrix_rows, op=MPI.SUM)
+
+    # Determine the local portion of the vector
+    if partition_like is not None:
+        local_rows_start, local_rows_end = partition_like.getOwnershipRange()
+        local_rows = local_rows_end - local_rows_start
+
+        size = ((local_rows, global_rows), (local_matrix_cols, local_matrix_cols))
+    else:
+        size = ((None, global_rows), (local_matrix_cols, local_matrix_cols))
+
+    if mat_type is None:
+        mat_type = local_matrix.getType()
+
+    if "dense" in mat_type:
+        sparse = False
+    else:
+        sparse = True
+
+    if sparse:
+        global_matrix = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
+    else:
+        global_matrix = PETSc.Mat().createDense(size=size, comm=COMM_WORLD)
+    global_matrix.setUp()
+
+    # The exscan operation is used to get the starting global row for each process.
+    # The result of the exclusive scan is the sum of the local rows from previous ranks.
+    global_row_start = COMM_WORLD.exscan(local_matrix_rows, op=MPI.SUM)
+    if rank == 0:
+        global_row_start = 0
+
+    concatenate_start = time.time()
+
+    if efficient:
+        global_matrix = concatenate_efficient(
+            local_matrix,
+            global_matrix,
+            local_matrix_rows,
+            global_row_start,
+            local_matrix_cols,
+        )
+    else:
+        global_matrix = concatenate_inefficient(
+            local_matrix, global_matrix, local_matrix_rows, global_row_start
+        )
+
+    concatenate_end = time.time()
+    concatenate_time = concatenate_end - concatenate_start
+    # global_concatenate_time = COMM_WORLD.allreduce(concatenate_time, op=MPI.SUM)
+
+    print("")
+    Print(f"  -Setting values: {concatenate_time: 2.2f} s", Fore.GREEN)
+
+    global_matrix.assemblyBegin()
+    global_matrix.assemblyEnd()
+
+    return global_matrix

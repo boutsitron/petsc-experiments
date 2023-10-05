@@ -52,11 +52,7 @@ APhi_local = A_local.matMult(Phi_seq)
 print_matrix_partitioning(APhi_local, "APhi_local")
 
 # Creating the global Aphi matrix
-APhi = (
-    concatenate_local_to_global_matrix(APhi_local, efficient=True)
-    if nproc > 1
-    else APhi_local
-)
+APhi = concatenate_local_to_global_matrix(APhi_local) if nproc > 1 else APhi_local
 APhi_seq = convert_global_matrix_to_seq(APhi)
 
 # Step 2: Compute A' = Phi.T * APhi

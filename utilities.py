@@ -10,6 +10,10 @@ from mpi4py import MPI
 
 rank = COMM_WORLD.rank
 
+# --------------------------------------------
+# Parallel print functions
+# --------------------------------------------
+
 
 def Print(message: str, color: str = Fore.WHITE):
     """Print function that prints only on rank 0 with color
@@ -82,8 +86,9 @@ def print_vector_partitioning(vec, name="", values=False):
     all_local_values = COMM_WORLD.gather(local_values, root=0)
 
     if rank == 0:
-        print(f"VECTOR {name} [{vec.getSize()}x1]")
-        print(vec.getType())
+        print(
+            f"{Fore.YELLOW}VECTOR {name} {vec.getType()} [{vec.getSize()}x1]{Fore.RESET}"
+        )
         # vec.view()
         print("")
         print(f"Partitioning for {name}:")
@@ -96,28 +101,85 @@ def print_vector_partitioning(vec, name="", values=False):
         print()
 
 
-def create_petsc_matrix_seq(input_array):
-    """Building a sequential PETSc matrix from an array
+# --------------------------------------------
+# PETSc vectors
+# --------------------------------------------
+
+
+def create_petsc_vector(input_array, partition_like=None):
+    """Create a PETSc vector from an input_array
 
     Args:
         input_array (np array): Input array
+        partition_like (PETSc mat, optional): Petsc matrix. Defaults to None.
 
     Returns:
-        seq mat: PETSc matrix
+        PETSc vec: PETSc vector
     """
-    assert len(input_array.shape) == 2
+    # Check if input_array is 1D and reshape if necessary
+    if len(input_array.shape) != 1:
+        raise ValueError("Input array should be 1-dimensional")
 
-    m, n = input_array.shape
-    matrix = PETSc.Mat().createAIJ(size=(m, n), comm=COMM_SELF)
-    matrix.setUp()
+    global_size = input_array.shape[0]
 
-    matrix.setValues(range(m), range(n), input_array, addv=False)
+    # Determine the local portion of the vector
+    if partition_like is not None:
+        local_start, local_end = partition_like.getOwnershipRange()
+        local_size = local_end - local_start
 
-    # Assembly the matrix to compute the final structure
-    matrix.assemblyBegin()
-    matrix.assemblyEnd()
+        size = (local_size, global_size)
+        vector = PETSc.Vec().createMPI(size, comm=COMM_WORLD)
 
-    return matrix
+    else:
+        vector = PETSc.Vec().createMPI(global_size, comm=COMM_WORLD)
+        local_start, local_end = vector.getOwnershipRange()
+
+    vector.setUp()
+
+    # Assign the values to the vector
+    for counter, i in enumerate(range(local_start, local_end)):
+        # Calculate the correct row in the array for the current process
+        i_in_array = counter + local_start
+        vector.setValues(i, input_array[i_in_array], addv=False)
+
+    # Assembly the vector to compute the final structure
+    vector.assemblyBegin()
+    vector.assemblyEnd()
+
+    return vector
+
+
+def create_petsc_vector_seq(input_array):
+    """Create a PETSc sequential vector from an input array
+
+    Args:
+        input_array (np array): Input 1-dimensional array
+
+    Returns:
+        PETSc Vec: PETSc sequential vector
+    """
+    # Check if input_array is 1D and reshape if necessary
+    if len(input_array.shape) != 1:
+        raise ValueError("Input array should be 1-dimensional")
+
+    k = input_array.shape[0]
+
+    # Create a sequential vector
+    vector = PETSc.Vec().createSeq(size=k, comm=COMM_SELF)
+
+    # Set the values
+    vector.setValues(range(k), input_array)
+
+    # Assembly the vector to compute the final structure
+    vector.assemblyBegin()
+    vector.assemblyEnd()
+
+    return vector
+
+
+# --------------------------------------------
+# PETSc matrices
+# --------------------------------------------
 
 
 def create_petsc_matrix(input_array, partition_like=None, sparse=True):
@@ -129,7 +191,7 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
         sparse (bool, optional): Toggle for sparese or dense. Defaults to True.
 
     Returns:
-        PETSc mat: PETSc matrix
+        PETSc mat: PETSc mpi matrix
     """
     # Check if input_array is 1D and reshape if necessary
     assert len(input_array.shape) == 2, "Input array should be 2-dimensional"
@@ -167,56 +229,33 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
     return matrix
 
 
-def create_petsc_vector_seq(input_array):
-    """Create a PETSc sequential vector from an input array
+def create_petsc_matrix_seq(input_array):
+    """Building a sequential PETSc matrix from an array
 
     Args:
-        input_array (np array): Input 1-dimensional array
-
-    Returns:
-        PETSc Vec: PETSc sequential vector
-    """
-    # Check if input_array is 1D and reshape if necessary
-    if len(input_array.shape) != 1:
-        raise ValueError("Input array should be 1-dimensional")
-
-    k = input_array.shape[0]
-
-    # Create a sequential vector
-    vector = PETSc.Vec().createSeq(size=k, comm=COMM_SELF)
-
-    # Set the values
-    vector.setValues(range(k), input_array)
-
-    # Assembly the vector to compute the final structure
-    vector.assemblyBegin()
-    vector.assemblyEnd()
-
-    return vector
-
-
-def get_local_submatrix(A):
-    """Get the local submatrix of A
-
-    Args:
-        A (mpi PETSc mat): partitioned PETSc matrix
+        input_array (np array): Input array
 
     Returns:
         seq mat: PETSc matrix
     """
-    local_rows_start, local_rows_end = A.getOwnershipRange()
-    local_rows = local_rows_end - local_rows_start
-    comm = A.getComm()
-    rows = PETSc.IS().createStride(
-        local_rows, first=local_rows_start, step=1, comm=comm
-    )
-    _, k = A.getSize()  # Get the number of columns (k) from A's size
-    cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
+    assert len(input_array.shape) == 2
 
-    # Getting the local submatrix
-    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
-    A_local = A.createSubMatrices(rows, cols)[0]
-    return A_local
+    m, n = input_array.shape
+    matrix = PETSc.Mat().createAIJ(size=(m, n), comm=COMM_SELF)
+    matrix.setUp()
+
+    matrix.setValues(range(m), range(n), input_array, addv=False)
+
+    # Assembly the matrix to compute the final structure
+    matrix.assemblyBegin()
+    matrix.assemblyEnd()
+
+    return matrix
+
+
+# --------------------------------------------
+# PETSc conversions
+# --------------------------------------------
 
 
 def convert_global_matrix_to_seq(A):
@@ -258,7 +297,75 @@ def convert_global_matrix_to_seq(A):
     return A_seq
 
 
-def concatenate_inefficient(
+def convert_seq_matrix_to_global(A_seq, partition=None):
+    """Convert a duplicated sequential matrix to a partitioned global matrix.
+
+    Args:
+        A_seq (PETSc.Mat): Sequential matrix that is duplicated across all processors.
+        partition (tuple, optional): The partition of the global matrix. Defaults to None.
+
+    Returns:
+        PETSc.Mat: A partitioned global matrix.
+    """
+    global_rows, global_cols = A_seq.getSize()
+
+    # Determine the local portion of the vector
+    if partition is not None:
+        local_rows_start, local_rows_end = partition
+        local_rows = local_rows_end - local_rows_start
+
+        size = ((local_rows, global_rows), (global_cols, global_cols))
+    else:
+        size = ((None, global_rows), (global_cols, global_cols))
+
+    # Create the global partitioned matrix with the same dimensions
+    A_global = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
+    A_global.setUp()
+
+    # Determine the rows that this process will own in the global matrix
+    local_rows_start, local_rows_end = A_global.getOwnershipRange()
+
+    # Populate the global matrix
+    for i in range(local_rows_start, local_rows_end):
+        cols, values = A_seq.getRow(i)
+        A_global.setValues(i, cols, values)
+
+    A_global.assemblyBegin()
+    A_global.assemblyEnd()
+
+    return A_global
+
+
+# --------------------------------------------
+# PETSc matrix operations
+# --------------------------------------------
+
+
+def get_local_submatrix(A):
+    """Get the local submatrix of A
+
+    Args:
+        A (mpi PETSc mat): partitioned PETSc matrix
+
+    Returns:
+        seq mat: PETSc matrix
+    """
+    local_rows_start, local_rows_end = A.getOwnershipRange()
+    local_rows = local_rows_end - local_rows_start
+    comm = A.getComm()
+    rows = PETSc.IS().createStride(
+        local_rows, first=local_rows_start, step=1, comm=comm
+    )
+    _, k = A.getSize()  # Get the number of columns (k) from A's size
+    cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
+
+    # Getting the local submatrix
+    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
+    A_local = A.createSubMatrices(rows, cols)[0]
+    return A_local
+
+
+def concatenate_row_wise(
     local_matrix, global_matrix, local_matrix_rows, global_row_start
 ):
     """Concatenate the local matrix to the global matrix
@@ -272,19 +379,15 @@ def concatenate_inefficient(
     Returns:
         PETSc mat: global matrix
     """
-    # This works but is very inefficient
     for i in range(local_matrix_rows):
         cols, values = local_matrix.getRow(i)
         global_row = i + global_row_start
-        # print(
-        #     f"For proc {rank}: Setting values for row {global_row} for {len(cols)} columns {cols} with {len(values)} values {values}"
-        # )
         global_matrix.setValues(global_row, cols, values)
 
     return global_matrix
 
 
-def concatenate_efficient(
+def concatenate_col_wise(
     local_matrix, global_matrix, local_matrix_rows, global_row_start, local_matrix_cols
 ):
     """Concatenate the local matrix to the global matrix
@@ -311,7 +414,7 @@ def concatenate_efficient(
 
 
 def concatenate_local_to_global_matrix(
-    local_matrix, partition_like=None, mat_type=None, efficient=True
+    local_matrix, partition_like=None, mat_type=None
 ):
     """Create the global matrix C from the local submatrix local_matrix
 
@@ -357,8 +460,8 @@ def concatenate_local_to_global_matrix(
 
     concatenate_start = time.time()
 
-    if efficient:
-        global_matrix = concatenate_efficient(
+    if local_matrix_cols <= local_matrix_rows:
+        global_matrix = concatenate_col_wise(
             local_matrix,
             global_matrix,
             local_matrix_rows,
@@ -366,7 +469,7 @@ def concatenate_local_to_global_matrix(
             local_matrix_cols,
         )
     else:
-        global_matrix = concatenate_inefficient(
+        global_matrix = concatenate_row_wise(
             local_matrix, global_matrix, local_matrix_rows, global_row_start
         )
 
@@ -381,42 +484,3 @@ def concatenate_local_to_global_matrix(
     global_matrix.assemblyEnd()
 
     return global_matrix
-
-
-def convert_seq_matrix_to_global(A_seq, partition=None):
-    """Convert a duplicated sequential matrix to a partitioned global matrix.
-
-    Args:
-        A_seq (PETSc.Mat): Sequential matrix that is duplicated across all processors.
-        partition (tuple, optional): The partition of the global matrix. Defaults to None.
-
-    Returns:
-        PETSc.Mat: A partitioned global matrix.
-    """
-    global_rows, global_cols = A_seq.getSize()
-
-    # Determine the local portion of the vector
-    if partition is not None:
-        local_rows_start, local_rows_end = partition
-        local_rows = local_rows_end - local_rows_start
-
-        size = ((local_rows, global_rows), (global_cols, global_cols))
-    else:
-        size = ((None, global_rows), (global_cols, global_cols))
-
-    # Create the global partitioned matrix with the same dimensions
-    A_global = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
-    A_global.setUp()
-
-    # Determine the rows that this process will own in the global matrix
-    local_rows_start, local_rows_end = A_global.getOwnershipRange()
-
-    # Populate the global matrix
-    for i in range(local_rows_start, local_rows_end):
-        cols, values = A_seq.getRow(i)
-        A_global.setValues(i, cols, values)
-
-    A_global.assemblyBegin()
-    A_global.assemblyEnd()
-
-    return A_global

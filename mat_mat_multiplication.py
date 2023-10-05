@@ -63,11 +63,7 @@ A_local = get_local_submatrix(A)
 C_local = multiply_matrices_seq(A_local, B_seq)
 
 # Creating the global C matrix
-C = (
-    concatenate_local_to_global_matrix(C_local, efficient=False)
-    if nproc > 1
-    else C_local
-)
+C = concatenate_local_to_global_matrix(C_local) if nproc > 1 else C_local
 print_matrix_partitioning(C, "C")
 
 # --------------------------------------------

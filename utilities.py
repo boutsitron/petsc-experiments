@@ -1,7 +1,5 @@
 """Utility functions for parallel handling"""
 
-import time
-
 import numpy as np
 from colorama import Fore, Style
 from firedrake import COMM_SELF, COMM_WORLD
@@ -202,9 +200,9 @@ def create_petsc_matrix(input_array, partition_like=None, sparse=True):
         local_rows = local_rows_end - local_rows_start
 
         # No parallelization in the columns, set local_cols = None to parallelize
-        size = ((local_rows, global_rows), (global_cols, global_cols))
+        size = ((local_rows, global_rows), (None, global_cols))
     else:
-        size = ((None, global_rows), (global_cols, global_cols))
+        size = ((None, global_rows), (None, global_cols))
 
     # Create a sparse or dense matrix based on the 'sparse' argument
     if sparse:
@@ -314,9 +312,9 @@ def convert_seq_matrix_to_global(A_seq, partition=None):
         local_rows_start, local_rows_end = partition
         local_rows = local_rows_end - local_rows_start
 
-        size = ((local_rows, global_rows), (global_cols, global_cols))
+        size = ((local_rows, global_rows), (None, global_cols))
     else:
-        size = ((None, global_rows), (global_cols, global_cols))
+        size = ((None, global_rows), (None, global_cols))
 
     # Create the global partitioned matrix with the same dimensions
     A_global = PETSc.Mat().createAIJ(size=size, comm=COMM_WORLD)
@@ -434,9 +432,9 @@ def concatenate_local_to_global_matrix(
         local_rows_start, local_rows_end = partition_like.getOwnershipRange()
         local_rows = local_rows_end - local_rows_start
 
-        size = ((local_rows, global_rows), (local_matrix_cols, local_matrix_cols))
+        size = ((local_rows, global_rows), (None, local_matrix_cols))
     else:
-        size = ((None, global_rows), (local_matrix_cols, local_matrix_cols))
+        size = ((None, global_rows), (None, local_matrix_cols))
 
     if mat_type is None:
         mat_type = local_matrix.getType()
@@ -458,8 +456,6 @@ def concatenate_local_to_global_matrix(
     if rank == 0:
         global_row_start = 0
 
-    concatenate_start = time.time()
-
     if local_matrix_cols <= local_matrix_rows:
         global_matrix = concatenate_col_wise(
             local_matrix,
@@ -472,13 +468,6 @@ def concatenate_local_to_global_matrix(
         global_matrix = concatenate_row_wise(
             local_matrix, global_matrix, local_matrix_rows, global_row_start
         )
-
-    concatenate_end = time.time()
-    concatenate_time = concatenate_end - concatenate_start
-    # global_concatenate_time = COMM_WORLD.allreduce(concatenate_time, op=MPI.SUM)
-
-    print("")
-    Print(f"  -Setting values: {concatenate_time: 2.2f} s", Fore.GREEN)
 
     global_matrix.assemblyBegin()
     global_matrix.assemblyEnd()

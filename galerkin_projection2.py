@@ -1,4 +1,4 @@
-"""Experimenting with PETSc mat-mat multiplication"""
+"""Experimenting with PETSc galerkin projection"""
 
 import time
 
@@ -8,18 +8,11 @@ from firedrake import COMM_WORLD
 from mpi4py import MPI
 from numpy.testing import assert_array_almost_equal
 
-from utilities import (
-    Print,
-    concatenate_local_to_global_matrix,
-    convert_global_matrix_to_seq,
-    convert_seq_matrix_to_global,
-    create_petsc_matrix,
-    create_petsc_matrix_seq,
-    get_local_submatrix,
-)
+from utilities import Print, create_petsc_matrix
 
 nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
+
 
 galerkin_start = time.time()
 
@@ -28,7 +21,6 @@ galerkin_start = time.time()
 #  A' = Phi.T * A * Phi
 # [k x k] <- [k x m] x [m x m] x [m x k]
 # --------------------------------------------
-
 m, k = 20000, 50
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
@@ -37,10 +29,9 @@ Phi_np = np.random.rand(m, k)
 
 # Create A as an mpi matrix distributed on each process
 A = create_petsc_matrix(A_np, sparse=True)
-# print_matrix_partitioning(A, "A")
+
 # Create Phi as an mpi matrix distributed on each process
 Phi = create_petsc_matrix(Phi_np, sparse=True)
-# print_matrix_partitioning(Phi, "Phi")
 
 galerkin_setup = time.time()
 galerkin_time = galerkin_setup - galerkin_start
@@ -50,39 +41,37 @@ Print(
     Fore.MAGENTA,
 )
 
-# Getting the correct local submatrix to be multiplied by Phi
-A_local = get_local_submatrix(A)
-# print_matrix_partitioning(A_local, "A_local")
+# Perform the PtAP (Phi Transpose times A times Phi) operation.
+# In mathematical terms, this operation is A' = Phi.T * A * Phi.
+# A_prime will store the result of the operation.
+AL = Phi.transposeMatMult(A)
+# print_matrix_partitioning(AL, "AL")
 
-# Get a Phi matrix that is sequential from the distributed Phi
-Phi_seq = convert_global_matrix_to_seq(Phi)
-# print_matrix_partitioning(Phi_seq, "Phi_seq")
-
-# Step 1: Compute Aphi = A * Phi
-APhi_local = create_petsc_matrix_seq(np.zeros((m, k)))
-APhi_local = A_local.matMult(Phi_seq)
-# print_matrix_partitioning(APhi_local, "APhi_local")
-
-# Creating the global Aphi matrix
-APhi = concatenate_local_to_global_matrix(APhi_local) if nproc > 1 else APhi_local
-APhi_seq = convert_global_matrix_to_seq(APhi)
-
-# Step 2: Compute A' = Phi.T * APhi
-A_prime_seq = create_petsc_matrix_seq(np.zeros((k, k)))
-A_prime_seq = Phi_seq.transposeMatMult(APhi_seq)
-# print_matrix_partitioning(A_prime_seq, "A_prime_seq")
-
-A_prime = convert_seq_matrix_to_global(A_prime_seq)
+# A_prime = AL.matMult(Phi)
+A_prime = AL * Phi
 # print_matrix_partitioning(A_prime, "A_prime")
 
 galerkin_arom = time.time()
 galerkin_time = galerkin_arom - galerkin_setup
 galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
 Print(
-    f"-Compute A' = Phi.T * A * Phi using Thanos's functions: {galerkin_time_avg: 2.2f} s",
+    f"-Compute A' = Phi.T * A * Phi using traditional functions: {galerkin_time_avg: 2.2f} s",
     Fore.MAGENTA,
 )
 
+# --------------------------------------------
+# TEST: Galerking projection of numpy matrices A_np and Phi_np
+# --------------------------------------------
+galerkin_start = time.time()
+
+A_prime = A.ptap(Phi)
+# print_matrix_partitioning(A_prime, "A_prime")
+
+galerkin_arom = time.time()
+Print(
+    f"-Compute A' = Phi.T * A * Phi using ptap(): {galerkin_arom - galerkin_start: 2.2f} s",
+    Fore.MAGENTA,
+)
 
 # --------------------------------------------
 # TEST: Galerking projection of numpy matrices A_np and Phi_np

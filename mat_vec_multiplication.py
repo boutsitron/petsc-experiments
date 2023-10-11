@@ -1,8 +1,12 @@
 """Experimenting with PETSc mat-vec multiplication"""
 
+import time
+
 import numpy as np
+from colorama import Fore
 from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
+from mpi4py import MPI
 from numpy.testing import assert_array_almost_equal
 
 from utilities import (
@@ -80,13 +84,15 @@ def scatter_local_to_global_vector(v_local):
     return v_global
 
 
+matvec_start = time.time()
+
 # --------------------------------------------
 # EXP: Multiplication of the transpose of mpi PETSc matrix with a sequential PETSc vector
 # c = A.T * b
 # [k x 1] = [m x k].T * [m x 1]
 # --------------------------------------------
 
-m, k = 11, 3
+m, k = 10000, 50
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
 A_np = np.random.randint(low=0, high=6, size=(m, k))
@@ -103,6 +109,14 @@ print_matrix_partitioning(A_seq, "matrix A_seq")
 b_seq = convert_global_vector_to_seq(b)
 print_vector_partitioning(b_seq, "vector b_seq")
 
+matvec_setup = time.time()
+matvec_time = matvec_setup - matvec_start
+matvec_time_avg = COMM_WORLD.allreduce(matvec_time, op=MPI.SUM) / nproc
+Print(
+    f"-Setup A matrix and b vector: {matvec_time_avg: 2.2f} s",
+    Fore.MAGENTA,
+)
+
 c_seq = create_petsc_vector_seq(np.zeros(k))
 A_seq.multTranspose(b_seq, c_seq)
 
@@ -110,6 +124,14 @@ print_vector_partitioning(c_seq, "c_seq")
 
 # c = scatter_local_to_global_vector(c_seq)
 # print_vector_partitioning(c, "c")
+
+matvec_arom = time.time()
+matvec_time = matvec_arom - matvec_setup
+matvec_time_avg = COMM_WORLD.allreduce(matvec_time, op=MPI.SUM) / nproc
+Print(
+    f"-Compute C = A.T * b: {matvec_time_avg: 2.2f} s",
+    Fore.MAGENTA,
+)
 
 # --------------------------------------------
 # TEST: Multiplication of a numpy matrix and a numpy vector

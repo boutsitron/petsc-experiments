@@ -50,6 +50,10 @@ Print(
     Fore.MAGENTA,
 )
 
+# --------------------------------------------
+# TEST: Using custom parallel/sequential functions to compute A' = Phi.T * A * Phi
+# --------------------------------------------
+
 # Getting the correct local submatrix to be multiplied by Phi
 A_local = get_local_submatrix(A)
 # print_matrix_partitioning(A_local, "A_local")
@@ -75,14 +79,50 @@ A_prime_seq = Phi_seq.transposeMatMult(APhi_seq)
 A_prime = convert_seq_matrix_to_global(A_prime_seq)
 # print_matrix_partitioning(A_prime, "A_prime")
 
-galerkin_arom = time.time()
-galerkin_time = galerkin_arom - galerkin_setup
+galerkin_seq = time.time()
+galerkin_time = galerkin_seq - galerkin_setup
 galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
 Print(
     f"-Compute A' = Phi.T * A * Phi using Thanos's functions: {galerkin_time_avg: 2.2f} s",
     Fore.MAGENTA,
 )
 
+# --------------------------------------------
+# TEST: Using parallel functions to compute A' = Phi.T * A * Phi
+# --------------------------------------------
+
+# Perform the PtAP (Phi Transpose times A times Phi) operation.
+# In mathematical terms, this operation is A' = Phi.T * A * Phi.
+# A_prime will store the result of the operation.
+AL = Phi.transposeMatMult(A)
+# print_matrix_partitioning(AL, "AL")
+
+# A_prime = AL.matMult(Phi)
+A_prime = AL * Phi
+# print_matrix_partitioning(A_prime, "A_prime")
+
+galerkin_parallel = time.time()
+galerkin_time = galerkin_parallel - galerkin_seq
+galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
+Print(
+    f"-Compute A' = Phi.T * A * Phi using parallel functions: {galerkin_time_avg: 2.2f} s",
+    Fore.MAGENTA,
+)
+
+# --------------------------------------------
+# TEST: Using ptap() to compute A' = Phi.T * A * Phi
+# --------------------------------------------
+
+A_prime = A.ptap(Phi)
+# print_matrix_partitioning(A_prime, "A_prime")
+
+galerkin_ptap = time.time()
+galerkin_time = galerkin_ptap - galerkin_parallel
+galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
+Print(
+    f"-Compute A' = Phi.T * A * Phi using ptap(): {galerkin_time_avg: 2.2f} s",
+    Fore.MAGENTA,
+)
 
 # --------------------------------------------
 # TEST: Galerking projection of numpy matrices A_np and Phi_np

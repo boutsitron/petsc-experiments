@@ -122,8 +122,8 @@ A_seq.multTranspose(b_seq, c_seq)
 
 print_vector_partitioning(c_seq, "c_seq")
 
-# c = scatter_local_to_global_vector(c_seq)
-# print_vector_partitioning(c, "c")
+c = scatter_local_to_global_vector(c_seq)
+print_vector_partitioning(c, "c")
 
 matvec_arom = time.time()
 matvec_time = matvec_arom - matvec_setup

@@ -29,7 +29,7 @@ galerkin_start = time.time()
 # [k x k] <- [k x m] x [m x m] x [m x k]
 # --------------------------------------------
 
-m, k = 20000, 50
+m, k = 10000, 50
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
 A_np = np.random.rand(m, m)

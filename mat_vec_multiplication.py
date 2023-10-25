@@ -117,12 +117,12 @@ Print(
     Fore.MAGENTA,
 )
 
-c_seq = create_petsc_vector_seq(np.zeros(k))
-A_seq.multTranspose(b_seq, c_seq)
+c_local = create_petsc_vector_seq(np.zeros(k))
+A_seq.multTranspose(b_seq, c_local)
 
-print_vector_partitioning(c_seq, "c_seq")
+print_vector_partitioning(c_local, "c_local")
 
-c = scatter_local_to_global_vector(c_seq)
+c = scatter_local_to_global_vector(c_local)
 print_vector_partitioning(c, "c")
 
 matvec_arom = time.time()
@@ -142,7 +142,7 @@ Print(f"{Ab_np}")
 
 # Get the local values from C
 # local_rows_start, local_rows_end = c.getOwnershipRange()
-c_test = c_seq.getArray()[:]
+c_test = c_local.getArray()[:]
 
 # Assert the correctness of the multiplication for the local subset
 assert_array_almost_equal(c_test, Ab_np[:], decimal=5)

@@ -88,12 +88,10 @@ Print(
 )
 
 # --------------------------------------------
-# TEST: Using parallel functions to compute A' = Phi.T * A * Phi
+# TEST: Using PETSc functions to compute A' = Phi.T * A * Phi
 # --------------------------------------------
 
-# Perform the PtAP (Phi Transpose times A times Phi) operation.
-# In mathematical terms, this operation is A' = Phi.T * A * Phi.
-# A_prime will store the result of the operation.
+# First compute AL = Phi.T * A, then compute A' = AL * Phi
 AL = Phi.transposeMatMult(A)
 # print_matrix_partitioning(AL, "AL")
 
@@ -101,14 +99,34 @@ AL = Phi.transposeMatMult(A)
 A_prime = AL * Phi
 # print_matrix_partitioning(A_prime, "A_prime")
 
-galerkin_parallel = time.time()
-galerkin_time = galerkin_parallel - galerkin_seq
+galerkin_parallel1 = time.time()
+galerkin_time = galerkin_parallel1 - galerkin_seq
 galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
 Print(
-    f"-Compute A' = Phi.T * A * Phi using parallel functions: {galerkin_time_avg: 2.2f} s",
+    f"-Compute A' = Phi.T * A * Phi using PETSc (left first): {galerkin_time_avg: 2.2f} s",
     Fore.MAGENTA,
 )
 
+# --------------------------------------------
+# TEST: Using PETSc functions to compute A' = Phi.T * A * Phi
+# --------------------------------------------
+
+# First compute AR = A * Phi, then compute A' = Phi.T * AR
+AR = A * Phi
+# print_matrix_partitioning(AR, "AR")
+
+A_prime = Phi.transposeMatMult(AR)
+# print_matrix_partitioning(A_prime, "A_prime")
+
+galerkin_parallel2 = time.time()
+galerkin_time = galerkin_parallel2 - galerkin_seq
+galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
+Print(
+    f"-Compute A' = Phi.T * A * Phi using PETSc (right first): {galerkin_time_avg: 2.2f} s",
+    Fore.MAGENTA,
+)
+
+A_prime_seq = convert_global_matrix_to_seq(A_prime)
 # --------------------------------------------
 # TEST: Using ptap() to compute A' = Phi.T * A * Phi
 # --------------------------------------------
@@ -117,12 +135,13 @@ A_prime = A.ptap(Phi)
 # print_matrix_partitioning(A_prime, "A_prime")
 
 galerkin_ptap = time.time()
-galerkin_time = galerkin_ptap - galerkin_parallel
+galerkin_time = galerkin_ptap - galerkin_parallel2
 galerkin_time_avg = COMM_WORLD.allreduce(galerkin_time, op=MPI.SUM) / nproc
 Print(
     f"-Compute A' = Phi.T * A * Phi using ptap(): {galerkin_time_avg: 2.2f} s",
     Fore.MAGENTA,
 )
+
 
 # --------------------------------------------
 # TEST: Galerking projection of numpy matrices A_np and Phi_np

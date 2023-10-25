@@ -7,14 +7,9 @@ import time
 import numpy as np
 from colorama import Fore
 from firedrake import COMM_WORLD
+from mpi4py import MPI
 
-from utilities import (
-    Print,
-    convert_global_matrix_to_seq,
-    convert_seq_matrix_to_global,
-    create_petsc_matrix,
-    print_matrix_partitioning,
-)
+from utilities import Print, create_petsc_matrix, print_matrix_partitioning
 
 with contextlib.suppress(ImportError):
     import slepc4py
@@ -25,6 +20,8 @@ with contextlib.suppress(ImportError):
 from numpy.testing import assert_array_almost_equal
 
 rank = COMM_WORLD.rank
+nproc = COMM_WORLD.size
+tab = " " * 4
 EPSILON_SVD = 1e-4
 EPS = sys.float_info.epsilon
 
@@ -50,42 +47,34 @@ def orthogonality(PPhi):  # sourcery skip: avoid-builtin-shadow
     dot_product = Phi1.dot(Phi2)
 
     if abs(dot_product) > min(EPSILON_SVD, EPS * m):
-        Print("    Basis has lost (numerical) orthogonality", Fore.RED)
+        Print(
+            f"{tab}Basis has lost (numerical) orthogonality {abs(dot_product):2.2e} > min({EPSILON_SVD:2.2e}, {EPS * m:2.2e})",
+            Fore.LIGHTRED_EX,
+        )
 
-        local_rows_start, local_rows_end = PPhi.getOwnershipRange()
-
-        # Type can be CHOL, GS, mro(), SVQB, TSQR, TSQRCHOL
-        _type = SLEPc.BV().OrthogBlockType.GS
-
-        # Check if the matrix is dense
         mat_type = PPhi.getType()
-
-        # if it's dense it's good to go
-        if "dense" in mat_type:
-            bv = SLEPc.BV().createFromMat(PPhi)
         # if it's sparse and partitioned, convert it to sequential and then to dense
-        elif "seq" not in mat_type:
-            PPhi_seq = convert_global_matrix_to_seq(PPhi)
-            bv = SLEPc.BV().createFromMat(PPhi_seq.convert("dense"))
-        # if it's sparse and sequential, convert it to dense
-        else:
+        if "aij" in mat_type:
             bv = SLEPc.BV().createFromMat(PPhi.convert("dense"))
+        else:
+            bv = SLEPc.BV().createFromMat(PPhi)
+
         bv.setFromOptions()
+        _type = SLEPc.BV().OrthogBlockType.GS
         bv.setOrthogonalization(_type)
         bv.orthogonalize()
 
         PPhi = bv.createMat()
 
-        if "seq" in PPhi.getType():
-            PPhi = convert_seq_matrix_to_global(
-                PPhi, partition=(local_rows_start, local_rows_end)
-            )
-
+        # Checking and correcting orthogonality
+        orth_time = time.time() - orth_start
+        orth_time_avg = COMM_WORLD.allreduce(orth_time, op=MPI.SUM) / nproc
+        Print(
+            f"{tab}2.4 Orthogonality: {orth_time_avg: 2.2f} s",
+            Fore.LIGHTRED_EX,
+        )
     else:
-        Print("    Basis is orthogonal", Fore.GREEN)
-
-    # Checking and correcting orthogonality
-    Print(f"    -Orthogonality: {time.time() - orth_start: 2.2f} s", Fore.GREEN)
+        Print(f"{tab}Basis is orthogonal", Fore.GREEN)
 
     return PPhi
 

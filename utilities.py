@@ -282,6 +282,28 @@ def create_petsc_matrix_seq(input_array):
     return matrix
 
 
+def create_petsc_diagonal_matrix_seq(vector):
+    """Building a PETSc diagonal matrix from a vector
+
+    Args:
+        vector (PETSc Vec): PETSc vector
+
+    Returns:
+        seqaij: PETSc diagonal matrix
+    """
+    k = vector.getSize()
+    # Create a sparse or dense matrix based on the 'sparse' argument
+    matrix = PETSc.Mat().createAIJ(size=(k, k), comm=COMM_SELF)
+    matrix.setUp()
+
+    matrix.setDiagonal(vector)
+
+    matrix.assemblyBegin()
+    matrix.assemblyEnd()
+
+    return matrix
+
+
 # --------------------------------------------
 # PETSc conversions
 # --------------------------------------------

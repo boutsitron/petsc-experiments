@@ -175,6 +175,37 @@ def create_petsc_vector_seq(input_array):
     return vector
 
 
+def get_local_subvector(b):
+    """Get the local subvector of a PETSc global vector b.
+
+    Args:
+        b (mpi PETSc Vec): partitioned PETSc vector
+
+    Returns:
+        seq Vec: PETSc vector containing only the locally owned entries
+    """
+    # Get the local ownership range
+    local_start, local_end = b.getOwnershipRange()
+
+    # Create an index set for the local range
+    comm = b.getComm()
+    local_indices = PETSc.IS().createStride(
+        local_end - local_start, first=local_start, step=1, comm=comm
+    )
+
+    # Create a sequential vector to hold the local subvector
+    local_size = local_end - local_start
+    b_local = PETSc.Vec().createSeq(local_size, comm=COMM_SELF)
+
+    # Extract the local subvector
+    b.getValues(local_indices, b_local)
+
+    # Clean up
+    local_indices.destroy()
+
+    return b_local
+
+
 # --------------------------------------------
 # PETSc matrices
 # --------------------------------------------

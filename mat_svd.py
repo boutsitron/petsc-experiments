@@ -12,7 +12,6 @@ from mpi4py import MPI
 from utilities import (
     Print,
     create_petsc_diagonal_matrix_seq,
-    create_petsc_matrix,
     create_petsc_matrix_seq,
     create_petsc_vector_seq,
     print_matrix_partitioning,
@@ -32,8 +31,7 @@ tab = " " * 4
 
 
 def SVD_slepc(QQ, prnt="off"):
-    """
-    SVD in PETSc implementation:
+    """SVD in PETSc implementation:
     a. performing SVD on Q
     b. taking the left and right singular vectors
 
@@ -45,10 +43,19 @@ def SVD_slepc(QQ, prnt="off"):
     q  q  q  =  u  u  u | 0  0  *  s  s  s  *  v  v  v
     q  q  q     u  u  u | 0  0     0  0  0     v  v  v
     q  q  q     u  u  u | 0  0     0  0  0
+
+    Args:
+        QQ (PETSc.Mat): matrix to perform SVD on
+        prnt (str, optional): Print option. Defaults to "off".
+
+    Returns:
+        PPhin (PETSc.Mat): left singular vectors
+        SS (PETSc.Mat): singular values
     """
     SVDtime_start = time.time()
 
     SVD = SLEPc.SVD()
+    # Add this after creating SVD and before SVD.solve()
     SVD.create()
     SVD.setOperator(QQ)
     SVD.setType(
@@ -58,18 +65,17 @@ def SVD_slepc(QQ, prnt="off"):
     SVD.solve()
 
     # kp1 is k+1
-    kp1, _ = QQ.getSize()
-
-    # Phin matrix for new SVD: Q = Un * Sn * Vn.T
-    PPhin = create_petsc_matrix_seq(np.zeros((kp1, kp1)))  # [k+1 x k+1]
-
-    # Psin matrix for new SVD: Q = Un * Sn * Vn.T
-    # PPsin = create_petsc_matrix_seq(np.zeros((kp1, kp1)))  # [k+1 x k+1]
-
-    # Vector to take singular values
-    Sn = create_petsc_vector_seq(np.zeros(kp1))
-
+    m, n = QQ.getSize()  # Assuming QQ is m x n matrix
     nconv = SVD.getConverged()
+
+    # Initialize Phin (U) and Vn matrices
+    PPhin = create_petsc_matrix_seq(np.zeros((m, nconv)))  # [m x nconv]
+    # PPsin = create_petsc_matrix_seq(np.zeros((n, nconv)))  # [n x nconv]
+
+    # Initialize Sn vector to hold singular values
+    Sn = create_petsc_vector_seq(np.zeros(nconv))
+    tolerance = 1e-13
+
     if nconv > 0:
         v, u = QQ.createVecs()
 
@@ -80,8 +86,8 @@ def SVD_slepc(QQ, prnt="off"):
                 Print(f"     sigma = {sigma:6.2e}, error = {error: 12g}")
 
             Sn.setValues(i, sigma)
-            PPhin.setValues(range(kp1), i, u)
-            # PPsin.setValues(i, range(kp1), v)
+            PPhin.setValues(range(m), i, u)
+            # PPsin.setValues(i, range(n), v)
 
         v.destroy()
         u.destroy()
@@ -92,28 +98,34 @@ def SVD_slepc(QQ, prnt="off"):
     PPhin.assemblyBegin()
     PPhin.assemblyEnd()
 
+    # Add this right after you compute PPhin
+    PPhin_values = PPhin.getValues(range(m), range(nconv))
+    Print(f"PPhin matrix values:\n {PPhin_values}")
+
     # Compute PPhin.T * PPhin
     result_matrix = PPhin.transposeMatMult(PPhin)
+
+    # Add this after computing the norm
+    result_matrix_values = result_matrix.getValues(range(nconv), range(nconv))
+    Print(f"result_matrix values:\n {result_matrix_values}")
+
     # Create an identity matrix of the same size
-    identity_matrix = create_petsc_matrix_seq(np.eye(kp1))
+    identity_matrix = create_petsc_matrix_seq(np.eye(nconv))
     # Subtract the identity matrix from the result to see if it's close to zero
     result_matrix.axpy(-1, identity_matrix)
     # Compute the Frobenius norm of the resulting matrix
     norm = result_matrix.norm()
     Print(f"    Frobenius norm of PPhin.T * PPhin: {norm:1.2e}")
     # Check if the norm is close to zero within some tolerance
-    # tolerance = 1e-13
-    # assert (
-    #     norm < tolerance
-    # ), f"PPhin is not orthonormal, Frobenius norm: {norm:1.2e} > {tolerance:1.2e}"
+    assert (
+        norm < tolerance
+    ), f"PPhin is not orthonormal, Frobenius norm: {norm:1.2e} > {tolerance:1.2e}"
 
     SS = create_petsc_diagonal_matrix_seq(Sn)
 
     SVDtime = time.time() - SVDtime_start
     SVDtime_avg = COMM_WORLD.allreduce(SVDtime, op=MPI.SUM) / nproc
-    Print(
-        f"{Fore.GREEN}  2.2 SVD of [{kp1:d}x{kp1:d}]: {SVDtime_avg:2.2f} s{Fore.RESET}"
-    )
+    Print(f"{Fore.GREEN}  2.2 SVD of [{m:d}x{n:d}]: {SVDtime_avg:2.2f} s{Fore.RESET}")
     Sn.destroy()
 
     return PPhin, SS
@@ -123,16 +135,16 @@ def SVD_slepc(QQ, prnt="off"):
 # EXP: Orthogonalization of an mpi PETSc matrix
 # --------------------------------------------
 
-m, k = 700, 3
+m, k = 7, 3
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
 A_np = np.random.rand(m, k)
 
-A = create_petsc_matrix(A_np, sparse=False)
+A = create_petsc_matrix_seq(A_np)
 print_matrix_partitioning(A, "A")
 
 # --------------------------------------------------
-PPhin, SS = SVD_slepc(A, prnt="off")
+PPhin, SS = SVD_slepc(A, prnt="on")
 print_matrix_partitioning(PPhin, "PPhin", values=False)
 
 # --------------------------------------------

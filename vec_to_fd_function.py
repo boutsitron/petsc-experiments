@@ -25,27 +25,52 @@ def vec_to_mixed_function(up_vec, PPhi):
     Returns:
         fd.Function: Mixed function with vector passed to it
     """
-    W = up.function_space()
-    V, Q = W.split()
+    W = PPhi.function_space()
+    V, Q = W.subfunctions
 
     # Get local number of degrees of freedom for V and Q
-    local_nodes = V.dof_dset.size
-    # local_cells = Q.dof_dset.size
-    NODES = COMM_WORLD.allreduce(local_nodes, op=MPI.SUM)
-    # NCELLS = COMM_WORLD.allreduce(local_cells, op=MPI.SUM)
+    local_nodes_V = V.dof_dset.size
+    local_dofs_V = 2 * local_nodes_V
+    local_dofs_Q = Q.dof_dset.size
+    global_dofs_W = W.dim()
 
-    # NDOFS = 2 * NODES + NCELLS
+    global_dofs_V = COMM_WORLD.allreduce(local_dofs_V, op=MPI.SUM)
+    global_dofs_Q = COMM_WORLD.allreduce(local_dofs_Q, op=MPI.SUM)
+
+    assert global_dofs_W == global_dofs_V + global_dofs_Q
+
+    print(
+        f"For proc {rank}: local_dofs_V = {local_dofs_V} + local_dofs_Q = {local_dofs_Q} = local_nodes_W = {global_dofs_W}"
+    )
+    print()
 
     Phiu, Phip = PPhi.subfunctions
     Phiu.rename("Phi_u")
     Phip.rename("Phi_p")
 
-    TNODES = 2 * NODES
+    # In parallel, each process will only handle its part of the vector.
+    with Phiu.dat.vec_wo as Phiu_vec, Phip.dat.vec_wo as Phip_vec:
+        # Get the range for this process for V and Q
+        ownership_start_V, ownership_end_V = Phiu_vec.getOwnershipRange()
+        ownership_start_Q, ownership_end_Q = Phip_vec.getOwnershipRange()
 
-    # converting numpy array back to fd.function
-    with Phiu.dat.vec as Phiu_vec, Phip.dat.vec as Phip_vec:
-        Phiu_vec[:] = up_vec[:TNODES].reshape((NODES, 2))
-        Phip_vec[:] = up_vec[TNODES:]
+        # The local portion of the vector that this process is responsible for
+        local_up_vec = up_vec.getArray(readonly=True)
+
+        # Now, only assign the values that this process owns
+        Phiu_vec.setValues(
+            range(ownership_start_V, ownership_end_V),
+            local_up_vec[:local_dofs_V].reshape((local_nodes_V, 2)),
+        )
+
+        Phip_vec.setValues(
+            range(ownership_start_Q, ownership_end_Q),
+            local_up_vec[local_dofs_V:],
+        )
+
+        # Finalize the insertion of values
+        Phiu_vec.assemble()
+        Phip_vec.assemble()
 
     return PPhi
 
@@ -68,7 +93,7 @@ velocity_init = fd.as_vector(
 )
 pressure_init = fd.sin(2 * fd.pi * x) * fd.cos(2 * fd.pi * y)  # Example pressure field
 
-u, p = up.split()
+u, p = up.subfunctions
 u.interpolate(velocity_init)
 p.interpolate(pressure_init)
 

@@ -1,12 +1,23 @@
 """Utility functions for parallel handling"""
 
+import contextlib
+import sys
+import time
+
 import numpy as np
 from colorama import Fore, Style
 from firedrake import COMM_SELF, COMM_WORLD
 from firedrake.petsc import PETSc
 from mpi4py import MPI
 
+with contextlib.suppress(ImportError):
+    import slepc4py
+
+    slepc4py.init(sys.argv)
+    from slepc4py import SLEPc
+
 rank = COMM_WORLD.rank
+nproc = COMM_WORLD.size
 
 # --------------------------------------------
 # Parallel print functions
@@ -323,10 +334,14 @@ def convert_global_matrix_to_seq(A):
 
     # Step 2: Convert the local submatrix to numpy array
     A_local_rows, A_local_cols = A_local.getSize()
+    start, end = A_local.getOwnershipRange()
+
     A_local_array = np.zeros((A_local_rows, A_local_cols))
-    for i in range(A_local_rows):
-        _, values = A_local.getRow(i)
-        A_local_array[i, :] = values
+    for i in range(start, end):
+        cols, values = A_local.getRow(i)
+        A_local_array[i, cols] = values
+
+    A_local.destroy()
 
     # Step 3: Use allgather to collect all local matrices to all processes
     gathered_data = COMM_WORLD.allgather(A_local_array)
@@ -336,7 +351,10 @@ def convert_global_matrix_to_seq(A):
 
     # Step 5: Create a new sequential PETSc matrix
     m, n = full_matrix_array.shape
-    A_seq = PETSc.Mat().createDense([m, n], comm=COMM_SELF)
+    if "aij" in A.getType():
+        A_seq = PETSc.Mat().createAIJ([m, n], comm=COMM_SELF)
+    else:
+        A_seq = PETSc.Mat().createDense([m, n], comm=COMM_SELF)
     A_seq.setUp()
 
     for i in range(m):
@@ -526,3 +544,114 @@ def concatenate_local_to_global_matrix(
     global_matrix.assemblyEnd()
 
     return global_matrix
+
+
+def SVD_slepc(QQ, prnt="off"):
+    """SVD in PETSc implementation:
+    a. performing SVD on Q
+    b. taking the left and right singular vectors
+
+    Q = U * S * V.T
+    [mxn] = [mxn] * [nxn] * [nxn]
+
+    q  q  q     u  u  u | 0  0     s  s  s
+    q  q  q     u  u  u | 0  0     s  s  s     v  v  v
+    q  q  q  =  u  u  u | 0  0  *  s  s  s  *  v  v  v
+    q  q  q     u  u  u | 0  0     0  0  0     v  v  v
+    q  q  q     u  u  u | 0  0     0  0  0
+
+    Args:
+        QQ (PETSc.Mat): matrix to perform SVD on
+        prnt (str, optional): Print option. Defaults to "off".
+
+    Returns:
+        PPhin (PETSc.Mat): left singular vectors
+        SS (PETSc.Mat): singular values
+    """
+    SVDtime_start = time.time()
+
+    SVD = SLEPc.SVD()
+    # Add this after creating SVD and before SVD.solve()
+    SVD.create()
+    SVD.setOperator(QQ)
+    SVD.setType(
+        SVD.Type.LAPACK
+    )  # CROSS, CYCLIC, LANCZOS, TRLANCZOS, LAPACK, RANDOMIZED, SCALAPACK
+    SVD.setFromOptions()
+    SVD.solve()
+
+    # kp1 is k+1
+    m, n = QQ.getSize()  # Assuming QQ is m x n matrix
+    nconv = SVD.getConverged()
+
+    # Initialize Phin (U) and Vn matrices
+    PPhin = create_petsc_matrix_seq(np.zeros((m, nconv)))  # [m x nconv]
+    # PPsin = create_petsc_matrix_seq(np.zeros((n, nconv)))  # [n x nconv]
+
+    # Initialize Sn vector to hold singular values
+    Sn = create_petsc_vector_seq(np.zeros(nconv))
+
+    if nconv > 0:
+        v, u = QQ.createVecs()
+
+        for i in range(nconv):
+            sigma = SVD.getSingularTriplet(i, u, v)
+            error = SVD.computeError(i)
+            if prnt == "on":
+                Print(f"     sigma = {sigma:6.2e}, error = {error: 12g}")
+
+            Sn.setValues(i, sigma)
+            PPhin.setValues(range(m), i, u)
+            # PPsin.setValues(i, range(n), v)
+
+        v.destroy()
+        u.destroy()
+
+    SVD.destroy()
+
+    # ------------------------------------------
+    PPhin.assemblyBegin()
+    PPhin.assemblyEnd()
+
+    # Add this right after you compute PPhin
+    # PPhin_values = PPhin.getValues(range(m), range(nconv))
+    # Print(f"PPhin matrix values:\n {PPhin_values}")
+
+    SS = create_petsc_diagonal_matrix_seq(Sn)
+
+    SVDtime = time.time() - SVDtime_start
+    SVDtime_avg = COMM_WORLD.allreduce(SVDtime, op=MPI.SUM) / nproc
+    Print(f"{Fore.GREEN}  2.2 SVD of [{m:d}x{n:d}]: {SVDtime_avg:2.2f} s{Fore.RESET}")
+    Sn.destroy()
+
+    return PPhin, SS
+
+
+def check_orthonormality(PPhi, tolerance=1e-13):
+    """Check if the matrix PPhi is orthonormal
+
+    Args:
+        PPhi (PETSc.Mat): matrix to check
+        tolerance (float, optional): tolerance for the Frobenius norm. Defaults to 1e-13.
+    """
+    # Compute PPhi.T * PPhi
+    _, k = PPhi.getSize()
+    result_matrix = PPhi.transposeMatMult(PPhi)
+
+    print_matrix_partitioning(result_matrix, "PPhi.T * PPhi", values=False)
+    result_matrix.view()
+
+    # Create an identity matrix of the same size
+    if "mpi" in result_matrix.getType():
+        identity_matrix = create_petsc_matrix(np.eye(k))
+    else:
+        identity_matrix = create_petsc_matrix_seq(np.eye(k))
+    # Subtract the identity matrix from the result to see if it's close to zero
+    result_matrix.axpy(-1, identity_matrix)
+    # Compute the Frobenius norm of the resulting matrix
+    norm = result_matrix.norm()
+    Print(f"    Frobenius norm of PPhi.T * PPhi: {norm:1.2e}")
+    # Check if the norm is close to zero within some tolerance
+    assert (
+        norm < tolerance
+    ), f"PPhi is not orthonormal, Frobenius norm: {norm:1.2e} > {tolerance:1.2e}"

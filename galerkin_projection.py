@@ -29,7 +29,7 @@ galerkin_start = time.time()
 # [k x k] <- [k x m] x [m x m] x [m x k]
 # --------------------------------------------
 
-m, k = 10000, 50
+m, k = 5000, 30
 # Generate the random numpy matrices
 np.random.seed(0)  # sets the seed to 0
 A_np = np.random.rand(m, m)
@@ -70,6 +70,7 @@ APhi_local = A_local.matMult(Phi_seq)
 # Creating the global Aphi matrix
 APhi = concatenate_local_to_global_matrix(APhi_local) if nproc > 1 else APhi_local
 APhi_seq = convert_global_matrix_to_seq(APhi)
+
 
 # Step 2: Compute A' = Phi.T * APhi
 A_prime_seq = create_petsc_matrix_seq(np.zeros((k, k)))
@@ -148,7 +149,7 @@ Print(
 # --------------------------------------------
 Aprime_np = Phi_np.T @ A_np @ Phi_np
 Print(f"MATRIX Aprime_np [{Aprime_np.shape[0]}x{Aprime_np.shape[1]}]")
-Print(f"{Aprime_np}")
+# Print(f"{Aprime_np}")
 
 # Get the local values from C
 local_rows_start, local_rows_end = A_prime.getOwnershipRange()

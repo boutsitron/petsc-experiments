@@ -634,8 +634,8 @@ def check_orthonormality(PPhi, tolerance=1e-13):
         PPhi (PETSc.Mat): matrix to check
         tolerance (float, optional): tolerance for the Frobenius norm. Defaults to 1e-13.
     """
-    # Compute PPhi.T * PPhi
     _, k = PPhi.getSize()
+    # Compute PPhi.T * PPhi
     result_matrix = PPhi.transposeMatMult(PPhi)
 
     print_matrix_partitioning(result_matrix, "PPhi.T * PPhi", values=False)

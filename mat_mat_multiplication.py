@@ -1,6 +1,5 @@
 """Experimenting with PETSc mat-mat multiplication"""
 
-
 import numpy as np
 from firedrake import COMM_WORLD
 from numpy.testing import assert_array_almost_equal
@@ -56,6 +55,7 @@ print_matrix_partitioning(B_seq, "B")
 A = create_petsc_matrix(A_np)
 print_matrix_partitioning(A, "A")
 
+
 # Getting the correct local submatrix to be multiplied by B_seq
 A_local = get_local_submatrix(A)
 
@@ -79,3 +79,39 @@ C_local = C.getValues(range(local_rows_start, local_rows_end), range(k))
 
 # Assert the correctness of the multiplication for the local subset
 assert_array_almost_equal(C_local, AB_np[local_rows_start:local_rows_end, :], decimal=5)
+
+
+# --------------------------------------------
+# TEST: Multiplication of 2 mpi PETSc matrices
+# --------------------------------------------
+
+B = create_petsc_matrix(B_np, sparse=False)
+print_matrix_partitioning(B, "B")
+
+C_parallel = A * B
+print_matrix_partitioning(C_parallel, "C_parallel")
+
+# Step 1: Assert Ownership Range
+C_ownership_range = C.getOwnershipRange()
+C_parallel_ownership_range = C_parallel.getOwnershipRange()
+
+assert (
+    C_ownership_range == C_parallel_ownership_range
+), f"Ownership ranges differ: {C_ownership_range} != {C_parallel_ownership_range}"
+
+# Step 2: Assert Matrix Values
+# Assuming that the assertion for the ownership range has passed
+local_rows_start, local_rows_end = C_ownership_range
+# For C
+C_local_vals = C.getValues(range(local_rows_start, local_rows_end), range(k))
+# For C_parallel
+C_parallel_local_vals = C_parallel.getValues(
+    range(local_rows_start, local_rows_end), range(k)
+)
+
+assert_array_almost_equal(
+    C_local_vals,
+    C_parallel_local_vals,
+    decimal=5,
+    err_msg="Matrix values differ between C and C_parallel",
+)

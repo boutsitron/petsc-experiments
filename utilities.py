@@ -429,7 +429,8 @@ def get_local_submatrix(A):
     cols = PETSc.IS().createStride(k, first=0, step=1, comm=comm)
 
     # Getting the local submatrix
-    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see petsc-users mailing list). There is a missing petsc4py binding, need to add it myself (and please create a merge request)
+    # TODO: To be replaced by MatMPIAIJGetLocalMat() in the future (see https://www.mail-archive.com/petsc-users@mcs.anl.gov/msg46778.html).
+    # There is a missing petsc4py binding: https://gitlab.com/petsc/petsc/-/issues/1443
     A_local = A.createSubMatrices(rows, cols)[0]
     return A_local
 

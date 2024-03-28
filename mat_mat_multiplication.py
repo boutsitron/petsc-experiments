@@ -17,25 +17,6 @@ nproc = COMM_WORLD.size
 rank = COMM_WORLD.rank
 
 
-def multiply_matrices_seq(A_seq, B_seq):
-    """Multiply 2 sequential matrices
-
-    Args:
-        A_seq (seqaij): local submatrix of A
-        B_seq (seqaij): sequential matrix B
-
-    Returns:
-        seq mat: PETSc matrix that is the product of A_seq and B_seq
-    """
-    _, A_seq_cols = A_seq.getSize()
-    B_seq_rows, _ = B_seq.getSize()
-    assert (
-        A_seq_cols == B_seq_rows
-    ), f"Incompatible matrix sizes for multiplication: {A_seq_cols} != {B_seq_rows}"
-    C_local = A_seq.matMult(B_seq)
-    return C_local
-
-
 # --------------------------------------------
 # EXP: Multiplication of an mpi PETSc matrix with a sequential PETSc matrix
 #  C = A * B
@@ -60,7 +41,7 @@ print_matrix_partitioning(A, "A")
 A_local = get_local_submatrix(A)
 
 # Multiplication of 2 sequential matrices
-C_local = multiply_matrices_seq(A_local, B_seq)
+C_local = A_local.matMult(B_seq)
 
 # Creating the global C matrix
 C = concatenate_local_to_global_matrix(C_local) if nproc > 1 else C_local

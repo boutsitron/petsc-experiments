@@ -573,7 +573,7 @@ def SVD_slepc(QQ, prnt="off"):
 
     SVD = SLEPc.SVD()
     # Add this after creating SVD and before SVD.solve()
-    SVD.create()
+    SVD.create(comm=COMM_SELF)
     SVD.setOperator(QQ)
     SVD.setType(
         SVD.Type.LAPACK

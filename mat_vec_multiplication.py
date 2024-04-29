@@ -61,7 +61,7 @@ def matvec_transpose_multiplication(A, b):
     duration_local = end_time - start_time
     duration = COMM_WORLD.allreduce(duration_local, op=MPI.SUM)
     Print(
-        f"Time taken for matvec_transpose_multiplication: {duration}",
+        f"Time taken for matvec_transpose_multiplication v1: {duration}",
         Fore.GREEN,
     )
 
@@ -87,8 +87,6 @@ def matvec_transpose_multiplication_v2(A, b):
 
     for i in range(k):
 
-        loop_start = time.time()
-
         # Extract the i-th column of A as a vector
         a_i = A.getColumnVector(i)
 
@@ -97,11 +95,6 @@ def matvec_transpose_multiplication_v2(A, b):
 
         # Set the i-th value of the resulting vector c
         c_seq.setValue(i, c_i, addv=False)  # addv=False to insert the value directly
-
-        loop_end = time.time()
-        loop_duration_local = loop_end - loop_start
-        loop_duration = COMM_WORLD.allreduce(loop_duration_local, op=MPI.SUM)
-        Print(f"Time taken for loop {i}: {loop_duration}", Fore.YELLOW)
 
     # Finalize the assembly of c_seq to ensure all values are correctly set
     c_seq.assemblyBegin()
@@ -141,7 +134,7 @@ def test_matvec_transpose_multiplication(A_np, b_np, c_seq):
 
 
 if __name__ == "__main__":
-    m, k = 5000000, 100
+    m, k = 5000000, 50
     np.random.seed(0)
     A_np = np.random.randint(low=0, high=6, size=(m, k))
     b_np = np.random.randint(low=0, high=6, size=m)
@@ -157,6 +150,7 @@ if __name__ == "__main__":
     c_seq = matvec_transpose_multiplication(A, b)
     # print_vector_partitioning(c_seq, "c_seq from original implementation")
 
+    Print("")
     # Test the result of the first implementation
     test_matvec_transpose_multiplication(A_np, b_np, c_seq)
 

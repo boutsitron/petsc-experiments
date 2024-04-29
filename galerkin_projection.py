@@ -10,11 +10,11 @@ from numpy.testing import assert_array_almost_equal
 
 from utilities import (
     Print,
-    concatenate_local_to_global_matrix,
     convert_global_matrix_to_seq,
     convert_seq_matrix_to_global,
     create_petsc_matrix,
     create_petsc_matrix_seq,
+    gather_local_to_global_matrix,
     get_local_submatrix,
 )
 
@@ -68,7 +68,7 @@ APhi_local = A_local.matMult(Phi_seq)
 # print_matrix_partitioning(APhi_local, "APhi_local")
 
 # Creating the global Aphi matrix
-APhi = concatenate_local_to_global_matrix(APhi_local) if nproc > 1 else APhi_local
+APhi = gather_local_to_global_matrix(APhi_local) if nproc > 1 else APhi_local
 APhi_seq = convert_global_matrix_to_seq(APhi)
 
 

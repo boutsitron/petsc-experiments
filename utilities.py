@@ -366,6 +366,29 @@ def convert_global_matrix_to_seq(A):
     return A_seq
 
 
+def convert_petsc_vector_to_matrix_seq(vector: PETSc.Vec) -> PETSc.Mat:
+    """Convert a PETSc vector to a PETSc matrix
+
+    Args:
+        vector (PETSc.Vec): PETSc vector
+
+    Returns:
+        PETSc.Mat: PETSc matrix (sequential)
+    """
+    n_elem = vector.getSize()
+
+    matrix = PETSc.Mat().createAIJ(size=(n_elem, 1), comm=COMM_SELF)
+
+    matrix.setUp()
+
+    matrix.setValues(range(n_elem), 0, vector, addv=False)
+
+    matrix.assemblyBegin()
+    matrix.assemblyEnd()
+
+    return matrix
+
+
 def convert_seq_matrix_to_global(A_seq, partition=None):
     """Convert a duplicated sequential matrix to a partitioned global matrix.
 
@@ -483,9 +506,7 @@ def concatenate_col_wise(
     return global_matrix
 
 
-def concatenate_local_to_global_matrix(
-    local_matrix, partition_like=None, mat_type=None
-):
+def gather_local_to_global_matrix(local_matrix, partition_like=None, mat_type=None):
     """Create the global matrix C from the local submatrix local_matrix
 
     Args:

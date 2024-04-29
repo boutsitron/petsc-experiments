@@ -6,9 +6,9 @@ from numpy.testing import assert_array_almost_equal
 
 from utilities import (
     Print,
-    concatenate_local_to_global_matrix,
     create_petsc_matrix,
     create_petsc_matrix_seq,
+    gather_local_to_global_matrix,
     get_local_submatrix,
     print_matrix_partitioning,
 )
@@ -44,7 +44,7 @@ A_local = get_local_submatrix(A)
 C_local = A_local.matMult(B_seq)
 
 # Creating the global C matrix
-C = concatenate_local_to_global_matrix(C_local) if nproc > 1 else C_local
+C = gather_local_to_global_matrix(C_local) if nproc > 1 else C_local
 print_matrix_partitioning(C, "C")
 
 # --------------------------------------------

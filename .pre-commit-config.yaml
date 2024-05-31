@@ -30,4 +30,4 @@ repos:
           - flake8-typing-imports==1.10.0
           - pep8-naming
           - flake8-docstrings==1.6.0
-        args: ["--ignore=D415,E501,D205,W503,D212,N806,N802,N803"]
+        args: ["--ignore=D415,E501,D205,W503,D212,N806,N802,N803,N816"]

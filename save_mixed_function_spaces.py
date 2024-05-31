@@ -6,7 +6,7 @@ import firedrake as fd
 from firedrake import COMM_WORLD
 from mpi4py import MPI
 
-indir = "POMs"
+indir = "MixedFunctionSpace"
 if not os.path.exists(indir):
     os.makedirs(indir)
 
@@ -15,22 +15,25 @@ nproc = COMM_WORLD.size
 tab = " " * 4
 
 
-def vec_to_mixed_function(up_vec, PPhi):
+def vec_to_mixed_function(up_vec, W):
     """Passes a vector to a mixed function
 
     Args:
         up_vec (PETSc.Vec): Vector to be passed to mixed function
-        PPhi (fd.Function): Mixed function to be passed to
+        W (fd.FunctionSpace): Mixed function space
 
     Returns:
         fd.Function: Mixed function with vector passed to it
     """
-    W = PPhi.function_space()
+    PPhi = fd.Function(W, name="PPhi")
     V, Q = W.subfunctions
 
     # Get local number of degrees of freedom for V and Q
+    mesh = V.mesh()
+    dim = mesh.topological_dimension()
+
     local_nodes_V = V.dof_dset.size
-    local_dofs_V = 2 * local_nodes_V
+    local_dofs_V = dim * local_nodes_V
     local_dofs_Q = Q.dof_dset.size
     global_dofs_W = W.dim()
 
@@ -54,13 +57,17 @@ def vec_to_mixed_function(up_vec, PPhi):
         ownership_start_V, ownership_end_V = Phiu_vec.getOwnershipRange()
         ownership_start_Q, ownership_end_Q = Phip_vec.getOwnershipRange()
 
+        # Ensure the ownership ranges are consistent with the local degrees of freedom
+        assert ownership_end_V - ownership_start_V == local_dofs_V
+        assert ownership_end_Q - ownership_start_Q == local_dofs_Q
+
         # The local portion of the vector that this process is responsible for
         local_up_vec = up_vec.getArray(readonly=True)
 
         # Now, only assign the values that this process owns
         Phiu_vec.setValues(
             range(ownership_start_V, ownership_end_V),
-            local_up_vec[:local_dofs_V].reshape((local_nodes_V, 2)),
+            local_up_vec[:local_dofs_V].reshape((local_nodes_V, dim)),
         )
 
         Phip_vec.setValues(
@@ -75,14 +82,33 @@ def vec_to_mixed_function(up_vec, PPhi):
     return PPhi
 
 
+def save_mixed_bifunction_space(PPhi):
+    """Saves a mixed function space to a file
+
+    Args:
+        PPhi (fd.Function): Mixed function space to be saved
+    """
+    W = PPhi.function_space()
+
+    # Get local number of degrees of freedom for V and Q
+    h5name = f"{indir}/PPhi.h5"
+    with fd.CheckpointFile(h5name, fd.FILE_CREATE) as afile:
+        afile.save_mesh(W.mesh())
+        afile.save_function(PPhi)
+
+
+# ------------------------------------------------------------------------------
+# TESTING THE FUNCTION THAT PASSES A VECTOR TO A MIXED FUNCTION SPACE FUNCTION
+# ------------------------------------------------------------------------------
+
 mesh = fd.UnitSquareMesh(10, 10)
+mesh.name = "mesh"
 
 V = fd.VectorFunctionSpace(mesh, "CG", 2)
 Q = fd.FunctionSpace(mesh, "CG", 1)
 W = V * Q
 
 up = fd.Function(W, name="solution")
-PPhi = fd.Function(W, name="PPhi")
 
 # Initialize up with some expressions for velocity and pressure
 x, y = fd.SpatialCoordinate(mesh)
@@ -101,13 +127,41 @@ p.interpolate(pressure_init)
 u.rename("velocity")
 p.rename("pressure")
 
-
 with up.dat.vec_ro as up_vec:
-    PPhi = vec_to_mixed_function(up_vec, PPhi)
+    PPhi = vec_to_mixed_function(up_vec, W)
     Phiu, Phip = PPhi.subfunctions
     Phiu.rename("Phi_u")
     Phip.rename("Phi_p")
 
-phi_pvd = fd.File(f"{indir}/phi.pvd")
+    # Get local number of degrees of freedom for V and Q
+    mesh = V.mesh()
+    dim = mesh.topological_dimension()
 
+    local_nodes_V = V.dof_dset.size
+    local_dofs_V = dim * local_nodes_V
+    local_dofs_Q = Q.dof_dset.size
+
+    ownership_start_W, ownership_end_W = up_vec.getOwnershipRange()
+    local_dofs_W = ownership_end_W - ownership_start_W
+
+    up_array = up_vec.getArray(readonly=True)
+    assert (
+        len(up_array) == local_dofs_W
+    ), f"The size of up_array {len(up_array)} does not match the global degrees of freedom for W {local_dofs_W}."
+
+    with Phiu.dat.vec_ro as Phiu_vec, Phip.dat.vec_ro as Phip_vec:
+        Phiu_array = Phiu_vec.getArray(readonly=True)
+        Phip_array = Phip_vec.getArray(readonly=True)
+        assert (
+            len(Phiu_array) == local_dofs_V
+        ), f"The size of Phiu_array {len(Phiu_array)} does not match the global degrees of freedom for V {local_dofs_V}."
+        assert (
+            len(Phip_array) == local_dofs_Q
+        ), f"The size of Phip_array {len(Phip_array)} does not match the global degrees of freedom for Q {local_dofs_Q}."
+
+
+save_mixed_bifunction_space(PPhi)
+
+
+phi_pvd = fd.File(f"{indir}/saved_phi.pvd")
 phi_pvd.write(Phiu, Phip, u, p)

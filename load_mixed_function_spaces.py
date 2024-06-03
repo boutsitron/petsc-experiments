@@ -5,7 +5,6 @@ import os
 import firedrake as fd
 from firedrake import COMM_WORLD
 from firedrake.output import VTKFile
-from firedrake.petsc import PETSc
 
 indir = "MixedFunctionSpace"
 if not os.path.exists(indir):
@@ -30,29 +29,29 @@ def load_mixed_bifunction_space(mesh_name="mesh"):
         mesh = afile.load_mesh(mesh_name)
         PPhi = afile.load_function(mesh, "PPhi")
 
-    return PPhi
+    return mesh, PPhi
 
 
 # ------------------------------------------------------------------------------
 # TESTING THE FUNCTION THAT PASSES A VECTOR TO A MIXED FUNCTION SPACE FUNCTION
 # ------------------------------------------------------------------------------
 
-PPhi = load_mixed_bifunction_space()
 
-W = PPhi.function_space()
+meshfile = f"{indir}/unit_square.msh"
+mesh = fd.Mesh(meshfile)
+mesh.name = "mesh"
+_, PPhi = load_mixed_bifunction_space()
+
+# mesh, PPhi = load_mixed_bifunction_space()
+
+V = fd.VectorFunctionSpace(mesh, "CG", 2)
+Q = fd.FunctionSpace(mesh, "CG", 1)
+W = V * Q
+
 up = fd.Function(W, name="solution")
 global_rows = W.dim()
 
 with up.dat.vec_ro as up_vec, PPhi.dat.vec_ro as PPhi_vec:
-
-    # Determine the local portion of the vector
-    local_start, local_end = up_vec.getOwnershipRange()
-    local_size = local_end - local_start
-
-    mat_size = ((local_size, global_rows), (None, 1))
-
-    phi_mat = PETSc.Mat().createAIJ(size=mat_size, comm=COMM_WORLD)
-    phi_mat.setUp()
 
     assert (
         up_vec.getOwnershipRange() == PPhi_vec.getOwnershipRange()
